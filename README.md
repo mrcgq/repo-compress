@@ -1,6 +1,4 @@
-根据项目真实现状（已修复的问题、真正的差异化、远程仓库功能等），重写 README.md。
 
-```markdown
 # 🗜️ repo-compress
 
 > 打包代码给 AI，同时让 Claude / GPT 的 Prompt 缓存真正生效
