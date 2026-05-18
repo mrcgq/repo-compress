@@ -7,7 +7,8 @@
  * - 加入省钱计算器展示
  * - 修复远程仓库 Failed to fetch（CORS）问题
  * - 移除文件大小硬性限制，改为警告
- * - [本次] 修复 parseRepoInput 地址识别，覆盖所有常见格式
+ * - 修复 parseRepoInput 地址识别，覆盖所有常见格式
+ * - [本次] 修复远程模式显示大小与实际不符：获取后立即过滤，显示过滤后真实大小
  */
 
 import { validateZipData, parseZip } from '../core/parser.js';
@@ -32,14 +33,16 @@ const PRICING = {
 // ============================================
 
 let state = {
-  file:        null,
-  output:      null,
-  format:      OUTPUT_FORMATS.MARKDOWN,
-  detectCache: true,
-  skipped:     [],
-  sourceLabel: '',
-  lastStats:   null,
-  remoteFiles: null,
+  file:          null,
+  output:        null,
+  format:        OUTPUT_FORMATS.MARKDOWN,
+  detectCache:   true,
+  skipped:       [],
+  sourceLabel:   '',
+  lastStats:     null,
+  remoteFiles:   null,   // 原始文件集合（未过滤）
+  remoteFiltered: null,  // 过滤后的文件集合（直接用于转换）
+  remoteStats:   null,   // 过滤后的统计信息
 };
 
 // ============================================
@@ -196,9 +199,13 @@ function handleLocalFile(file) {
   const v = validateZipData(file);
   if (!v.valid) { showToast(v.error); return; }
 
-  state.file        = file;
-  state.remoteFiles = null;
-  state.sourceLabel = file.name;
+  state.file           = file;
+  state.remoteFiles    = null;
+  state.remoteFiltered = null;
+  state.remoteStats    = null;
+  state.sourceLabel    = file.name;
+
+  // 本地模式：显示 ZIP 原始大小（ZIP 是压缩的，解压后会更大，这里只是文件大小）
   showFileInfo(file.name, file.size);
 }
 
@@ -212,7 +219,7 @@ function handleLocalFile(file) {
 //   owner/repo/tree/branch/path/to/folder
 //   owner/repo/blob/branch/path/to/file.js
 //   owner/repo/commits/branch
-//   owner/repo/releases
+//   owner/repo/releases/tag/v1.0.0
 //   github.com/owner/repo
 //   github.com/owner/repo/tree/branch
 //   https://github.com/owner/repo
@@ -225,85 +232,74 @@ function handleLocalFile(file) {
 // ============================================
 
 function parseRepoInput(raw) {
-  // 1. 清理首尾空白
   let input = raw.trim();
-
   if (!input) return null;
 
-  // 2. SSH 格式：git@github.com:owner/repo.git
-  //    → 转换为 owner/repo
-  const sshMatch = input.match(/^git@github\.com:([^/\s]+\/[^/\s]+?)(?:\.git)?$/i);
+  // 1. SSH 格式：git@github.com:owner/repo.git
+  const sshMatch = input.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i);
   if (sshMatch) {
-    const [owner, repo] = sshMatch[1].split('/');
-    return { repo: `${owner}/${repo}`, branch: null };
+    return { repo: `${sshMatch[1]}/${sshMatch[2]}`, branch: null };
   }
 
-  // 3. 去掉协议头（https:// http://）
+  // 2. 去掉协议头
   input = input.replace(/^https?:\/\//i, '');
 
-  // 4. 去掉 github.com/ 前缀（可选，允许用户粘贴完整域名）
+  // 3. 去掉 github.com/ 前缀
   input = input.replace(/^(?:www\.)?github\.com\//i, '');
 
-  // 5. 去掉末尾 .git
+  // 4. 去掉末尾 .git
   input = input.replace(/\.git$/, '');
 
-  // 6. 去掉末尾斜杠
+  // 5. 去掉末尾斜杠
   input = input.replace(/\/+$/, '');
 
-  // 7. 现在 input 的格式应该是：
-  //    owner/repo
-  //    owner/repo@branch
-  //    owner/repo/tree/branch[/...]
-  //    owner/repo/blob/branch[/...]
-  //    owner/repo/commits/branch
-  //    owner/repo/releases[/tag/v1.0.0]
-  //    owner/repo/pulls
-  //    owner/repo/issues
-  //    等等
-
-  // 先拆出 owner 和 repo（前两段固定是 owner/repo）
+  // 6. 拆分路径段
   const parts = input.split('/');
 
+  // 至少需要 owner + repo 两段
   if (parts.length < 2) return null;
 
   const owner = parts[0];
-  const repo  = parts[1];
+  let   repo  = parts[1];
 
-  // owner 和 repo 必须是合法的 GitHub 名称
-  // GitHub 规则：字母、数字、连字符、下划线、点
+  // owner/repo 里可能带 @branch（手动输入格式）
+  let branch = null;
+  const atIdx = repo.indexOf('@');
+  if (atIdx !== -1) {
+    branch = repo.slice(atIdx + 1);
+    repo   = repo.slice(0, atIdx);
+  }
+
+  // 合法性校验：GitHub 名称只允许字母、数字、连字符、下划线、点
   if (!owner || !repo) return null;
   if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
 
   const repoFullName = `${owner}/${repo}`;
 
-  // 8. 没有更多路径段 → 只有 owner/repo
+  // 如果已经从 @branch 拿到了分支，直接返回
+  if (branch) {
+    return { repo: repoFullName, branch };
+  }
+
+  // 只有 owner/repo，没有更多路径
   if (parts.length === 2) {
     return { repo: repoFullName, branch: null };
   }
 
-  // 9. owner/repo@branch 格式（用户手动指定分支）
-  //    注意：@branch 附在 repo 上，已经在 parts[1] 里
-  const atMatch = repo.match(/^([^@]+)@(.+)$/);
-  if (atMatch) {
-    return { repo: `${owner}/${atMatch[1]}`, branch: atMatch[2] };
-  }
+  // 7. 解析第三段（路径类型）
+  const pathType = parts[2];
 
-  // 10. 解析第三段（路径类型标识符）
-  const pathType = parts[2]; // tree / blob / commits / releases / ...
-
-  // 已知的 GitHub 页面路径类型，第三段之后紧跟分支名
-  const BRANCH_AFTER = new Set(['tree', 'blob', 'commits', 'commit', 'compare']);
+  // 这些路径类型后面紧跟分支名
+  const BRANCH_AFTER = new Set([
+    'tree', 'blob', 'commits', 'commit', 'compare', 'blame',
+  ]);
 
   if (BRANCH_AFTER.has(pathType) && parts.length >= 4) {
-    // parts[3] 就是分支名（可能含斜杠，但分支名本身通常不含斜杠）
-    // 对于 tree/branch/path/to/folder，branch = parts[3]
-    const branch = parts[3];
-    return { repo: repoFullName, branch };
+    return { repo: repoFullName, branch: parts[3] };
   }
 
-  // 11. 其他路径类型（releases、pulls、issues、actions 等）
-  //     忽略路径，只取 owner/repo，不指定分支
-  //     示例：owner/repo/releases/tag/v1.0.0 → owner/repo，branch=null
+  // 其他页面路径（releases、pulls、issues、actions、settings 等）
+  // 忽略路径，只取 owner/repo
   return { repo: repoFullName, branch: null };
 }
 
@@ -479,7 +475,7 @@ async function handleRemoteFetch() {
 
   const parsed = parseRepoInput(input);
   if (!parsed) {
-    showToast('无法识别仓库地址，支持格式：owner/repo、GitHub 链接、git clone 地址');
+    showToast('无法识别仓库地址，支持：owner/repo、GitHub 链接、git clone 地址');
     return;
   }
 
@@ -490,6 +486,7 @@ async function handleRemoteFetch() {
   el.progressSection.style.display = 'block';
 
   try {
+    // Step 1：获取文件内容
     const { files, skipped, branch } = await fetchRepoViaAPI(
       parsed.repo,
       parsed.branch,
@@ -497,19 +494,34 @@ async function handleRemoteFetch() {
       (text, pct) => setProgress(text, pct)
     );
 
-    setProgress('下载完成！', 100);
+    // Step 2：立即运行过滤，获得真实的文件数和大小
+    // 这样 showFileInfo 显示的数字与后续转换结果完全一致
+    setProgress('过滤文件...', 92);
+    const { filtered, stats } = filterFiles(files);
 
-    let totalBytes = 0;
-    for (const f of files.values()) totalBytes += f.size;
+    setProgress('完成！', 100);
 
-    state.remoteFiles = { files, skipped };
-    state.file        = { name: `${parsed.repo}@${branch}.zip` };
-    state.sourceLabel = `${parsed.repo}@${branch}`;
+    // 存入 state
+    state.remoteFiles    = { files, skipped };
+    state.remoteFiltered = filtered;   // 已过滤，转换时直接用
+    state.remoteStats    = stats;      // 过滤后统计
+    state.file           = { name: `${parsed.repo}@${branch}.zip` };
+    state.sourceLabel    = `${parsed.repo}@${branch}`;
 
     setTimeout(() => {
       el.progressSection.style.display = 'none';
-      showFileInfo(state.sourceLabel, totalBytes);
-      showToast(`✅ 已获取 ${files.size} 个文件（${parsed.repo}@${branch}）`, 'success');
+
+      // 显示过滤后的真实大小，和转换结果里的数字完全一致
+      showFileInfo(
+        state.sourceLabel,
+        stats.totalSize,
+        stats.includedFiles
+      );
+
+      showToast(
+        `✅ 已获取 ${stats.includedFiles} 个文件（${parsed.repo}@${branch}）`,
+        'success'
+      );
     }, 300);
 
   } catch (err) {
@@ -524,11 +536,21 @@ async function handleRemoteFetch() {
 
 // ============================================
 // 共用：显示文件信息
+// fileCount 仅远程模式传入，本地模式不传
 // ============================================
 
-function showFileInfo(name, size) {
-  el.fileName.textContent         = name;
-  el.fileSize.textContent         = formatSize(size);
+function showFileInfo(name, size, fileCount = null) {
+  el.fileName.textContent = name;
+
+  // 大小显示：过滤后的实际内容大小
+  // 本地 ZIP 模式显示 ZIP 压缩包大小（实际内容解压后更大）
+  // 远程模式显示过滤后的内容大小（和转换结果一致）
+  if (fileCount !== null) {
+    el.fileSize.textContent = `${formatSize(size)}（${fileCount} 个文件，过滤后）`;
+  } else {
+    el.fileSize.textContent = formatSize(size);
+  }
+
   el.fileInfo.style.display       = 'block';
   el.optionsSection.style.display = 'block';
 }
@@ -547,23 +569,27 @@ async function handleConvert() {
   el.convertBtn.disabled          = true;
 
   try {
-    let files, skipped;
+    let filtered, stats, skipped;
 
-    if (state.remoteFiles) {
-      setProgress('准备文件...', 20);
-      files   = state.remoteFiles.files;
-      skipped = state.remoteFiles.skipped;
+    if (state.remoteFiltered) {
+      // 远程模式：过滤已经在 handleRemoteFetch 里跑完了，直接用缓存结果
+      setProgress('准备文件...', 30);
+      filtered = state.remoteFiltered;
+      stats    = state.remoteStats;
+      skipped  = state.remoteFiles.skipped;
     } else {
+      // 本地 ZIP 模式
       setProgress('正在解析 ZIP 文件...', 15);
       const parsed = await parseZip(state.file);
-      files   = parsed.files;
       skipped = parsed.skipped;
+
+      setProgress('正在过滤文件...', 40);
+      const result = filterFiles(parsed.files);
+      filtered = result.filtered;
+      stats    = result.stats;
     }
 
-    state.skipped = skipped;
-
-    setProgress('正在过滤文件...', 40);
-    const { filtered, stats } = filterFiles(files);
+    state.skipped   = skipped;
     state.lastStats = stats;
 
     let cacheDetection = null;
@@ -754,13 +780,16 @@ function downloadFile() {
 
 function resetState() {
   state = {
-    file: null, output: null,
-    format:      OUTPUT_FORMATS.MARKDOWN,
-    detectCache: true,
-    skipped:     [],
-    sourceLabel: '',
-    lastStats:   null,
-    remoteFiles: null,
+    file:          null,
+    output:        null,
+    format:        OUTPUT_FORMATS.MARKDOWN,
+    detectCache:   true,
+    skipped:       [],
+    sourceLabel:   '',
+    lastStats:     null,
+    remoteFiles:   null,
+    remoteFiltered: null,
+    remoteStats:   null,
   };
 
   el.fileInput.value               = '';
