@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>repo-compress | ZIP to AI Prompt</title>
+  <title>repo-compress | 让 AI 缓存真正生效的代码打包工具</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -11,7 +11,13 @@
   <header class="header">
     <div class="container">
       <h1>🗜️ repo-compress</h1>
-      <p class="subtitle">将 GitHub 项目 ZIP 转换为 AI 友好的单文件格式</p>
+      <p class="subtitle">
+        打包代码给 AI，同时让 Claude / GPT 的 Prompt 缓存真正生效
+      </p>
+      <p class="subtitle-hint">
+        普通工具打包后每次问 AI 都要重新收费 ·
+        repo-compress 检测并消除动态内容，缓存命中率从 0% 到 90%+
+      </p>
     </div>
   </header>
 
@@ -57,7 +63,6 @@
             />
           </div>
 
-          <!-- GitHub Token（可选，避免 rate limit） -->
           <div class="token-group">
             <input
               type="password"
@@ -137,7 +142,10 @@
           <input type="checkbox" id="detectCache" checked>
           检测缓存破坏向量（推荐）
         </label>
-        <p class="option-hint">检测可能影响 AI Prompt 缓存效率的动态内容</p>
+        <p class="option-hint">
+          检测时间戳、UUID、Session ID 等动态内容，
+          帮助 Claude / GPT Prompt Cache 真正命中，减少 AI 费用
+        </p>
       </div>
 
       <button id="convertBtn" class="btn-primary">
@@ -156,6 +164,7 @@
     <!-- Results -->
     <section id="resultsSection" class="results-section" style="display: none;">
 
+      <!-- 基础统计 -->
       <div class="stats-card">
         <h3>📊 统计信息</h3>
         <div class="stats-grid">
@@ -179,16 +188,25 @@
         <div id="languageStats" class="language-stats"></div>
       </div>
 
+      <!-- 警告 -->
       <div id="warningsCard" class="warnings-card" style="display: none;">
         <h4>⚠️ 警告</h4>
         <ul id="warningsList" class="warnings-list"></ul>
       </div>
 
+      <!-- 省钱计算器（核心差异化展示） -->
+      <div id="savingsCard" class="savings-card" style="display: none;">
+        <h4>💰 Prompt Cache 省钱估算</h4>
+        <div id="savingsContent"></div>
+      </div>
+
+      <!-- 缓存破坏检测详情 -->
       <div id="cacheCard" class="cache-card" style="display: none;">
-        <h4>🔍 缓存破坏检测</h4>
+        <h4>🔍 缓存破坏检测详情</h4>
         <div id="cacheResults"></div>
       </div>
 
+      <!-- 输出 -->
       <div class="output-card">
         <div class="output-header">
           <h3>📄 转换结果</h3>
@@ -217,11 +235,11 @@
     <div class="container">
       <p>
         开源项目 |
-        <a href="https://github.com/yourusername/repo-compress" target="_blank">GitHub</a> |
+        <a href="https://github.com/mrcgq/repo-compress" target="_blank">GitHub</a> |
         <a href="#" id="helpLink">使用帮助</a>
       </p>
       <p class="footer-note">
-        💡 提示：生成的文件可以直接粘贴给 Claude、ChatGPT 等 AI 进行代码分析
+        💡 隐私优先：所有处理在浏览器本地完成，代码不上传任何服务器
       </p>
     </div>
   </footer>
@@ -247,18 +265,33 @@
           <li>选择输出格式，点击"开始转换"</li>
           <li>复制结果，粘贴给 AI 进行分析</li>
         </ol>
+
         <h3>输出格式选择</h3>
         <ul>
           <li><strong>Markdown</strong>：代码高亮、结构清晰，适合 ChatGPT 和 Gemini</li>
           <li><strong>XML</strong>：边界清晰，Claude 官方推荐格式</li>
           <li><strong>纯文本</strong>：兼容性最强，适合简单项目</li>
         </ul>
+
+        <h3>什么是缓存破坏检测？</h3>
+        <p>
+          Claude、GPT 等 AI 有 Prompt Cache 功能：如果你每次发送的代码完全一样，
+          AI 会命中缓存，<strong>费用降低 90%</strong>。
+        </p>
+        <p style="margin-top:0.5rem">
+          但代码里如果有时间戳、UUID、Session ID 等每次都不一样的内容，
+          缓存就永远命中不了。repo-compress 会自动检测这些"定时炸弹"并告诉你。
+        </p>
+
         <h3>智能过滤</h3>
         <p>自动排除：<code>node_modules/</code>、<code>.git/</code>、<code>dist/</code>、
-          <code>build/</code>、二进制文件、媒体文件等。</p>
-        <h3>缓存破坏检测</h3>
-        <p>检测时间戳、UUID、Session ID、环境变量等动态内容，
-          帮助优化 AI Prompt 缓存效率。</p>
+          <code>build/</code>、二进制文件、媒体文件、<code>.env</code> 敏感文件等。</p>
+
+        <h3>隐私说明</h3>
+        <p>
+          所有文件处理完全在浏览器本地完成，代码内容不会上传到任何服务器。
+          GitHub Token 仅存储在本地 localStorage。
+        </p>
       </div>
     </div>
   </div>
@@ -266,12 +299,10 @@
   <!-- Toast -->
   <div id="toast" class="toast"></div>
 
+  <!-- JSZip（必须在 app.js 之前加载） -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
-  <!-- 引入 styles.css -->
-  <link rel="stylesheet" href="styles.css">
-
-  <!-- 引入 app.js -->
+  <!-- App（type="module" 支持 import） -->
   <script type="module" src="app.js"></script>
 
 </body>
