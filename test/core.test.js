@@ -36,8 +36,9 @@ describe('Parser', () => {
   });
 
   test('validateZipData - should reject oversized files', () => {
-    // 用鸭子类型模拟大文件，避免实际分配 10MB 内存
-    const oversized = { byteLength: FILE_SIZE_LIMITS.MAX_TOTAL_SIZE + 1 };
+    // Uint8Array 是 validateZipData 支持的合法类型
+    // Node.js 对大 TypedArray 做懒分配，不会真正占用物理内存
+    const oversized = new Uint8Array(FILE_SIZE_LIMITS.MAX_TOTAL_SIZE + 1);
     const result = validateZipData(oversized);
     assert.strictEqual(result.valid, false);
     assert.match(result.error, /too large/);
@@ -96,9 +97,9 @@ describe('Filter', () => {
 
   test('filterFiles - should collect language stats', () => {
     const files = new Map([
-      ['index.js', { path: 'index.js', content: 'js',  size: 2, extension: '.js' }],
-      ['style.css',{ path: 'style.css',content: 'css', size: 3, extension: '.css' }],
-      ['app.js',   { path: 'app.js',   content: 'js2', size: 3, extension: '.js' }],
+      ['index.js',  { path: 'index.js',  content: 'js',  size: 2, extension: '.js' }],
+      ['style.css', { path: 'style.css', content: 'css', size: 3, extension: '.css' }],
+      ['app.js',    { path: 'app.js',    content: 'js2', size: 3, extension: '.js' }],
     ]);
 
     const { stats } = filterFiles(files);
@@ -162,19 +163,19 @@ describe('Converter', () => {
   });
 
   test('convert - output should be deterministic (same order every time)', () => {
-    // P1-2：验证纯字母序排序，输出每次完全一致
     const files = new Map([
       ['z.js', { path: 'z.js', content: 'z', size: 1, extension: '.js', name: 'z.js' }],
       ['a.js', { path: 'a.js', content: 'a', size: 1, extension: '.js', name: 'a.js' }],
       ['m.js', { path: 'm.js', content: 'm', size: 1, extension: '.js', name: 'm.js' }],
     ]);
-    const stats = { totalFiles: 3, includedFiles: 3, totalSize: 3, languages: {}, warnings: [] };
+    const stats = {
+      totalFiles: 3, includedFiles: 3, totalSize: 3, languages: {}, warnings: [],
+    };
 
     const out1 = convert(files, stats, OUTPUT_FORMATS.TXT);
     const out2 = convert(files, stats, OUTPUT_FORMATS.TXT);
     assert.strictEqual(out1, out2);
 
-    // 验证 a.js 在 m.js 前面，m.js 在 z.js 前面
     const aIdx = out1.indexOf('FILE: a.js');
     const mIdx = out1.indexOf('FILE: m.js');
     const zIdx = out1.indexOf('FILE: z.js');
@@ -182,7 +183,6 @@ describe('Converter', () => {
   });
 
   test('convert - XML CDATA should handle ]]> in content', () => {
-    // P0-4：验证 CDATA 转义修复
     const files = new Map([
       ['tricky.js', {
         path:      'tricky.js',
@@ -192,14 +192,13 @@ describe('Converter', () => {
         name:      'tricky.js',
       }],
     ]);
-    const stats = { totalFiles: 1, includedFiles: 1, totalSize: 36, languages: {}, warnings: [] };
+    const stats = {
+      totalFiles: 1, includedFiles: 1, totalSize: 36, languages: {}, warnings: [],
+    };
 
     const output = convert(files, stats, OUTPUT_FORMATS.XML);
-    // 不应该有未转义的 ]]> 直接关闭 CDATA
-    // 正确转义后应该是 ]]>]]><![CDATA[
     assert.ok(output.includes(']]>]]><![CDATA['), 'CDATA should be properly escaped');
-    // 整体 XML 结构应该完整
-    assert.ok(output.includes('</repository>'), 'XML should close properly');
+    assert.ok(output.includes('</repository>'),   'XML should close properly');
   });
 
   test('convert - should include stats in all formats', () => {
@@ -231,7 +230,6 @@ describe('Cache Buster Detector', () => {
   });
 
   test('detectCacheBusters - should detect random IDs (UUID v4)', () => {
-    // UUID v4：第三段首位必须是 4，第四段首位必须是 8/9/a/b
     const files = new Map([
       ['uuid.js', {
         path:    'uuid.js',
@@ -313,7 +311,9 @@ describe('Cache Buster Detector', () => {
     const { suggestions } = detectCacheBusters(files);
     assert.ok(suggestions.length > 0);
     assert.ok(
-      suggestions.some(s => s.toLowerCase().includes('timestamp') || s.includes('dynamic')),
+      suggestions.some(s =>
+        s.toLowerCase().includes('timestamp') || s.includes('dynamic')
+      ),
       'Should mention timestamps or dynamic content'
     );
   });
@@ -369,7 +369,6 @@ describe('Integration', () => {
     const { filtered, stats } = filterFiles(files);
     const output = convert(filtered, stats, OUTPUT_FORMATS.XML);
 
-    // 基本 XML 结构验证
     assert.ok(output.startsWith('<?xml version="1.0"'));
     assert.ok(output.includes('<repository>'));
     assert.ok(output.includes('</repository>'));
