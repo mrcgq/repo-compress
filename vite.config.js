@@ -5,8 +5,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   root: 'src/web',
 
-  // 加这一行！把 /repo-compress/ 改成你的仓库名
-  base: '/repo-compress/',
+  // 修改这里：改为 './' 即可，它会自动适配任何路径
+  base: './', 
 
   build: {
     outDir: '../../dist',
@@ -17,3 +17,14 @@ export default defineConfig({
     open: true,
   },
 });
+
+
+
+
+
+
+
+
+
+
+
