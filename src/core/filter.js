@@ -1,7 +1,10 @@
-
 /**
  * 文件过滤器
  * 职责：根据规则过滤文件
+ *
+ * 修复记录：
+ * [本次] 移除硬性总大小截断，改为纯警告
+ *        用户自己决定是否继续，工具不替用户做决定
  */
 
 import { DEFAULT_IGNORE_PATTERNS, FILE_SIZE_LIMITS, STATS_TEMPLATE } from '../utils/constants.js';
@@ -20,32 +23,24 @@ export function filterFiles(files, options = {}) {
     };
   }
 
-  const ignorePatterns = [
+  const ignorePatterns  = [
     ...DEFAULT_IGNORE_PATTERNS,
     ...(options.exclude || []),
   ];
-
   const includePatterns = options.include?.length > 0 ? options.include : null;
 
   const stats = {
     ...STATS_TEMPLATE,
     totalFiles: files.size,
-    languages: {},
-    warnings: [],
+    languages:  {},
+    warnings:   [],
   };
 
   const filtered = new Map();
-  let totalSize = 0;
+  let   totalSize = 0;
 
-  // 修复：按路径排序后再遍历，确保截断行为可预测
-  // src/ 开头的文件排在前面，确保源码优先被包含
-  const sortedEntries = Array.from(files.entries()).sort(([a], [b]) => {
-    // src 目录优先
-    const aIsSrc = a.startsWith('src/') ? 0 : 1;
-    const bIsSrc = b.startsWith('src/') ? 0 : 1;
-    if (aIsSrc !== bIsSrc) return aIsSrc - bIsSrc;
-    return a.localeCompare(b);
-  });
+  // 按字母序遍历，保证过滤行为可预测
+  const sortedEntries = Array.from(files.entries()).sort(([a], [b]) => a.localeCompare(b));
 
   for (const [path, file] of sortedEntries) {
     // 包含规则
@@ -58,21 +53,12 @@ export function filterFiles(files, options = {}) {
       continue;
     }
 
-    // 单文件大小限制
+    // 单文件大小限制（在 parser.js 已经处理过一次，这里是 filter 层的防御）
     if (file.size > FILE_SIZE_LIMITS.MAX_FILE_SIZE) {
       stats.warnings.push(
-        `Skipped large file: ${path} (${(file.size / 1024).toFixed(1)}KB > ${FILE_SIZE_LIMITS.MAX_FILE_SIZE / 1024}KB limit)`
+        `Skipped large file: ${path} (${(file.size / 1024 / 1024).toFixed(2)}MB > ${FILE_SIZE_LIMITS.MAX_FILE_SIZE / 1024 / 1024}MB limit per file)`
       );
       continue;
-    }
-
-    // 总大小限制
-    if (totalSize + file.size > FILE_SIZE_LIMITS.MAX_TOTAL_SIZE) {
-      stats.warnings.push(
-        `Total size limit reached (${(FILE_SIZE_LIMITS.MAX_TOTAL_SIZE / 1024 / 1024).toFixed(0)}MB). ` +
-        `${files.size - filtered.size} file(s) skipped. Consider using --include to narrow scope.`
-      );
-      break;
     }
 
     filtered.set(path, file);
@@ -83,11 +69,18 @@ export function filterFiles(files, options = {}) {
   }
 
   stats.includedFiles = filtered.size;
-  stats.totalSize = totalSize;
+  stats.totalSize     = totalSize;
 
-  if (totalSize > FILE_SIZE_LIMITS.WARN_TOTAL_SIZE) {
+  // 总大小警告（只警告，不截断）
+  if (totalSize > FILE_SIZE_LIMITS.WARN_LARGE_SIZE) {
     stats.warnings.push(
-      `Output is large (${(totalSize / 1024 / 1024).toFixed(2)}MB). AI context limits may be exceeded.`
+      `Output is very large (${(totalSize / 1024 / 1024).toFixed(2)}MB). ` +
+      `Most AI context windows will be exceeded. Consider using --include to narrow scope.`
+    );
+  } else if (totalSize > FILE_SIZE_LIMITS.WARN_TOTAL_SIZE) {
+    stats.warnings.push(
+      `Output is large (${(totalSize / 1024 / 1024).toFixed(2)}MB). ` +
+      `AI context limits may be exceeded. Consider using --include to narrow scope.`
     );
   }
 
@@ -101,36 +94,36 @@ export function filterFiles(files, options = {}) {
  */
 export function getLanguageStats(stats) {
   const languageNames = {
-    '.js': 'JavaScript',
-    '.ts': 'TypeScript',
-    '.jsx': 'React JSX',
-    '.tsx': 'React TSX',
-    '.py': 'Python',
-    '.java': 'Java',
-    '.go': 'Go',
-    '.rs': 'Rust',
-    '.md': 'Markdown',
-    '.json': 'JSON',
-    '.css': 'CSS',
-    '.scss': 'SCSS',
-    '.html': 'HTML',
-    '.vue': 'Vue',
+    '.js':     'JavaScript',
+    '.ts':     'TypeScript',
+    '.jsx':    'React JSX',
+    '.tsx':    'React TSX',
+    '.py':     'Python',
+    '.java':   'Java',
+    '.go':     'Go',
+    '.rs':     'Rust',
+    '.md':     'Markdown',
+    '.json':   'JSON',
+    '.css':    'CSS',
+    '.scss':   'SCSS',
+    '.html':   'HTML',
+    '.vue':    'Vue',
     '.svelte': 'Svelte',
-    '.rb': 'Ruby',
-    '.php': 'PHP',
-    '.sh': 'Shell',
-    '.yaml': 'YAML',
-    '.yml': 'YAML',
-    '.toml': 'TOML',
-    '.sql': 'SQL',
-    '.kt': 'Kotlin',
-    '.swift': 'Swift',
+    '.rb':     'Ruby',
+    '.php':    'PHP',
+    '.sh':     'Shell',
+    '.yaml':   'YAML',
+    '.yml':    'YAML',
+    '.toml':   'TOML',
+    '.sql':    'SQL',
+    '.kt':     'Kotlin',
+    '.swift':  'Swift',
   };
 
   return Object.entries(stats.languages)
     .map(([ext, count]) => ({
       extension: ext,
-      name: languageNames[ext] || ext,
+      name:      languageNames[ext] || ext,
       count,
     }))
     .sort((a, b) => b.count - a.count);
@@ -157,16 +150,14 @@ function patternToRegex(pattern) {
 
   let regexStr = pattern
     .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '\x00')       // 临时占位
+    .replace(/\*\*/g, '\x00')
     .replace(/\*/g, '[^/]*')
     .replace(/\x00/g, '.*');
 
-  // 不以 .* 开头时，允许匹配路径中任意位置
   if (!regexStr.startsWith('.*')) {
     regexStr = '(^|/)' + regexStr;
   }
 
-  // 结尾如果是目录模式（.* 结尾），不加 $；否则加 $
   if (!regexStr.endsWith('.*')) {
     regexStr = regexStr + '($|/)';
   }
