@@ -6,7 +6,8 @@
  * - 修复 escapeCdata bug
  * - 加入省钱计算器展示
  * - 修复远程仓库 Failed to fetch（CORS）问题
- * - [本次] 移除文件大小硬性限制，改为警告
+ * - 移除文件大小硬性限制，改为警告
+ * - [本次] 修复 parseRepoInput 地址识别，覆盖所有常见格式
  */
 
 import { validateZipData, parseZip } from '../core/parser.js';
@@ -192,8 +193,6 @@ function handleLocalFile(file) {
     showToast('请选择 .zip 格式的文件');
     return;
   }
-
-  // validateZipData 只做格式校验，不限制大小
   const v = validateZipData(file);
   if (!v.valid) { showToast(v.error); return; }
 
@@ -204,30 +203,112 @@ function handleLocalFile(file) {
 }
 
 // ============================================
-// 远程仓库：解析输入
+// 远程仓库：解析输入（全格式覆盖版）
+//
+// 支持的格式：
+//   owner/repo
+//   owner/repo@branch
+//   owner/repo/tree/branch
+//   owner/repo/tree/branch/path/to/folder
+//   owner/repo/blob/branch/path/to/file.js
+//   owner/repo/commits/branch
+//   owner/repo/releases
+//   github.com/owner/repo
+//   github.com/owner/repo/tree/branch
+//   https://github.com/owner/repo
+//   https://github.com/owner/repo.git
+//   https://github.com/owner/repo/tree/branch
+//   https://github.com/owner/repo/blob/branch/file.js
+//   http://github.com/owner/repo
+//   git@github.com:owner/repo.git
+//   git@github.com:owner/repo
 // ============================================
 
-function parseRepoInput(input) {
-  input = input.trim();
+function parseRepoInput(raw) {
+  // 1. 清理首尾空白
+  let input = raw.trim();
 
-  const urlMatch = input.match(
-    /github\.com\/([^/]+\/[^/]+?)(?:\/tree\/([^/]+))?(?:\/|$)/
-  );
-  if (urlMatch) {
-    return { repo: urlMatch[1].replace(/\.git$/, ''), branch: urlMatch[2] || null };
+  if (!input) return null;
+
+  // 2. SSH 格式：git@github.com:owner/repo.git
+  //    → 转换为 owner/repo
+  const sshMatch = input.match(/^git@github\.com:([^/\s]+\/[^/\s]+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    const [owner, repo] = sshMatch[1].split('/');
+    return { repo: `${owner}/${repo}`, branch: null };
   }
 
-  const atMatch = input.match(/^([^@\s]+)@([^@\s]+)$/);
-  if (atMatch) return { repo: atMatch[1], branch: atMatch[2] };
+  // 3. 去掉协议头（https:// http://）
+  input = input.replace(/^https?:\/\//i, '');
 
-  if (/^[\w.-]+\/[\w.-]+$/.test(input)) return { repo: input, branch: null };
+  // 4. 去掉 github.com/ 前缀（可选，允许用户粘贴完整域名）
+  input = input.replace(/^(?:www\.)?github\.com\//i, '');
 
-  return null;
+  // 5. 去掉末尾 .git
+  input = input.replace(/\.git$/, '');
+
+  // 6. 去掉末尾斜杠
+  input = input.replace(/\/+$/, '');
+
+  // 7. 现在 input 的格式应该是：
+  //    owner/repo
+  //    owner/repo@branch
+  //    owner/repo/tree/branch[/...]
+  //    owner/repo/blob/branch[/...]
+  //    owner/repo/commits/branch
+  //    owner/repo/releases[/tag/v1.0.0]
+  //    owner/repo/pulls
+  //    owner/repo/issues
+  //    等等
+
+  // 先拆出 owner 和 repo（前两段固定是 owner/repo）
+  const parts = input.split('/');
+
+  if (parts.length < 2) return null;
+
+  const owner = parts[0];
+  const repo  = parts[1];
+
+  // owner 和 repo 必须是合法的 GitHub 名称
+  // GitHub 规则：字母、数字、连字符、下划线、点
+  if (!owner || !repo) return null;
+  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
+
+  const repoFullName = `${owner}/${repo}`;
+
+  // 8. 没有更多路径段 → 只有 owner/repo
+  if (parts.length === 2) {
+    return { repo: repoFullName, branch: null };
+  }
+
+  // 9. owner/repo@branch 格式（用户手动指定分支）
+  //    注意：@branch 附在 repo 上，已经在 parts[1] 里
+  const atMatch = repo.match(/^([^@]+)@(.+)$/);
+  if (atMatch) {
+    return { repo: `${owner}/${atMatch[1]}`, branch: atMatch[2] };
+  }
+
+  // 10. 解析第三段（路径类型标识符）
+  const pathType = parts[2]; // tree / blob / commits / releases / ...
+
+  // 已知的 GitHub 页面路径类型，第三段之后紧跟分支名
+  const BRANCH_AFTER = new Set(['tree', 'blob', 'commits', 'commit', 'compare']);
+
+  if (BRANCH_AFTER.has(pathType) && parts.length >= 4) {
+    // parts[3] 就是分支名（可能含斜杠，但分支名本身通常不含斜杠）
+    // 对于 tree/branch/path/to/folder，branch = parts[3]
+    const branch = parts[3];
+    return { repo: repoFullName, branch };
+  }
+
+  // 11. 其他路径类型（releases、pulls、issues、actions 等）
+  //     忽略路径，只取 owner/repo，不指定分支
+  //     示例：owner/repo/releases/tag/v1.0.0 → owner/repo，branch=null
+  return { repo: repoFullName, branch: null };
 }
 
 // ============================================
 // 远程仓库：通过 GitHub API 获取文件内容
-// 完全避开 ZIP 下载的 CORS 问题
 // ============================================
 
 async function getDefaultBranch(repo, headers) {
@@ -333,11 +414,10 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   onProgress(`获取文件列表 (${repo}@${defaultBranch})...`, 20);
   const tree = await getFileTree(repo, defaultBranch, headers);
 
-  // 单文件大小限制与 constants.js 保持一致（2MB）
   const MAX_FILE_SIZE = 2 * 1024 * 1024;
   const candidates = tree.filter(item => {
-    if (shouldSkipPath(item.path))    return false;
-    if (item.size > MAX_FILE_SIZE)    return false;
+    if (shouldSkipPath(item.path))  return false;
+    if (item.size > MAX_FILE_SIZE)  return false;
     return true;
   });
 
@@ -399,7 +479,7 @@ async function handleRemoteFetch() {
 
   const parsed = parseRepoInput(input);
   if (!parsed) {
-    showToast('格式不正确，请输入 owner/repo 或完整 GitHub URL');
+    showToast('无法识别仓库地址，支持格式：owner/repo、GitHub 链接、git clone 地址');
     return;
   }
 
