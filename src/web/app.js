@@ -2,17 +2,14 @@
  * Web UI Application Logic
  *
  * 修复记录：
- * - [本次] 消除与 src/core/ 的代码重复，改为直接 import
- * - [本次] 修复 escapeCdata bug（随 core/converter.js 一起修复）
- * - [本次] 加入省钱计算器展示
- * - [本次] 首页描述更新，突出缓存价值
+ * - 消除与 src/core/ 的代码重复，改为直接 import
+ * - 修复 escapeCdata bug
+ * - 加入省钱计算器展示
+ * - [本次] 修复远程仓库 Failed to fetch（CORS）问题
+ *          改用 GitHub Contents API + Tree API，完全避开 ZIP 下载的 CORS 限制
  */
 
-// ============================================
-// 直接复用 core 模块（消除重复代码）
-// ============================================
-
-import { parseZip, validateZipData } from '../core/parser.js';
+import { validateZipData, parseZip } from '../core/parser.js';
 import { filterFiles }               from '../core/filter.js';
 import { convert }                   from '../core/converter.js';
 import { detectCacheBusters }        from '../core/detector.js';
@@ -20,21 +17,13 @@ import { OUTPUT_FORMATS, FORMAT_EXTENSIONS } from '../utils/constants.js';
 import { formatSize, formatNumber }  from '../utils/helpers.js';
 
 // ============================================
-// 本地常量（仅 Web UI 需要的）
+// 定价常量
 // ============================================
 
-/**
- * Claude Prompt Cache 定价参考（美元）
- * 来源：https://www.anthropic.com/pricing
- * claude-3-5-sonnet 为例
- */
 const PRICING = {
-  // 未命中缓存：输入 token 全价
-  INPUT_PER_M:        3.00,   // $3.00 / 1M tokens
-  // 命中缓存：读取价格（约为全价的 10%）
-  CACHE_READ_PER_M:   0.30,   // $0.30 / 1M tokens
-  // 缓存写入（只有第一次）
-  CACHE_WRITE_PER_M:  3.75,   // $3.75 / 1M tokens
+  INPUT_PER_M:       3.00,
+  CACHE_READ_PER_M:  0.30,
+  CACHE_WRITE_PER_M: 3.75,
 };
 
 // ============================================
@@ -48,7 +37,9 @@ let state = {
   detectCache: true,
   skipped:     [],
   sourceLabel: '',
-  lastStats:   null,  // 保存最后一次的 stats，供计算器使用
+  lastStats:   null,
+  // 远程模式下直接存文件集合，跳过 ZIP 解析
+  remoteFiles: null,
 };
 
 // ============================================
@@ -56,33 +47,26 @@ let state = {
 // ============================================
 
 const el = {
-  // Tabs
   tabBtns:         document.querySelectorAll('.tab-btn'),
   tabLocal:        document.getElementById('tab-local'),
   tabRemote:       document.getElementById('tab-remote'),
-  // Local
   dropzone:        document.getElementById('dropzone'),
   fileInput:       document.getElementById('fileInput'),
-  // Remote
   repoUrl:         document.getElementById('repoUrl'),
   githubToken:     document.getElementById('githubToken'),
   fetchBtn:        document.getElementById('fetchBtn'),
   tokenHelpBtn:    document.getElementById('tokenHelpBtn'),
   tokenHint:       document.getElementById('tokenHint'),
-  // File Info
   fileInfo:        document.getElementById('fileInfo'),
   fileName:        document.getElementById('fileName'),
   fileSize:        document.getElementById('fileSize'),
   clearBtn:        document.getElementById('clearBtn'),
-  // Options
   optionsSection:  document.getElementById('optionsSection'),
   convertBtn:      document.getElementById('convertBtn'),
   detectCacheChk:  document.getElementById('detectCache'),
-  // Progress
   progressSection: document.getElementById('progressSection'),
   progressFill:    document.getElementById('progressFill'),
   progressText:    document.getElementById('progressText'),
-  // Results
   resultsSection:  document.getElementById('resultsSection'),
   statFiles:       document.getElementById('statFiles'),
   statSize:        document.getElementById('statSize'),
@@ -93,10 +77,8 @@ const el = {
   warningsList:    document.getElementById('warningsList'),
   cacheCard:       document.getElementById('cacheCard'),
   cacheResults:    document.getElementById('cacheResults'),
-  // 省钱计算器
   savingsCard:     document.getElementById('savingsCard'),
   savingsContent:  document.getElementById('savingsContent'),
-  // 输出
   outputContent:   document.getElementById('outputContent'),
   copyBtn:         document.getElementById('copyBtn'),
   copyText:        document.getElementById('copyText'),
@@ -134,7 +116,7 @@ el.tabBtns.forEach(btn => {
 });
 
 // ============================================
-// Token Help
+// Token Help & 持久化
 // ============================================
 
 el.tokenHelpBtn.addEventListener('click', () => {
@@ -142,7 +124,6 @@ el.tokenHelpBtn.addEventListener('click', () => {
   el.tokenHint.style.display = hidden ? 'block' : 'none';
 });
 
-// Token 本地持久化（不上传服务器）
 const savedToken = localStorage.getItem('rc_github_token');
 if (savedToken) el.githubToken.value = savedToken;
 el.githubToken.addEventListener('change', () => {
@@ -166,7 +147,6 @@ document.querySelectorAll('.example-btn').forEach(btn => {
 // Event Listeners
 // ============================================
 
-// 本地上传
 el.dropzone.addEventListener('click',    () => el.fileInput.click());
 el.fileInput.addEventListener('change',  e  => handleLocalFile(e.target.files[0]));
 el.dropzone.addEventListener('dragover', e  => {
@@ -180,13 +160,11 @@ el.dropzone.addEventListener('drop', e => {
   handleLocalFile(e.dataTransfer.files[0]);
 });
 
-// 远程获取
 el.fetchBtn.addEventListener('click', handleRemoteFetch);
 el.repoUrl.addEventListener('keydown', e => {
   if (e.key === 'Enter') handleRemoteFetch();
 });
 
-// 通用
 el.clearBtn.addEventListener('click', resetState);
 document.querySelectorAll('input[name="format"]').forEach(radio => {
   radio.addEventListener('change', e => { state.format = e.target.value; });
@@ -200,7 +178,7 @@ el.helpLink.addEventListener('click', e => {
   e.preventDefault();
   el.helpModal.style.display = 'flex';
 });
-el.closeModal.addEventListener('click', () => { el.helpModal.style.display = 'none'; });
+el.closeModal.addEventListener('click',  () => { el.helpModal.style.display = 'none'; });
 el.helpModal.addEventListener('click', e => {
   if (e.target === el.helpModal) el.helpModal.style.display = 'none';
 });
@@ -219,6 +197,7 @@ function handleLocalFile(file) {
   if (!v.valid) { showToast(v.error); return; }
 
   state.file        = file;
+  state.remoteFiles = null;
   state.sourceLabel = file.name;
   showFileInfo(file.name, file.size);
 }
@@ -230,7 +209,6 @@ function handleLocalFile(file) {
 function parseRepoInput(input) {
   input = input.trim();
 
-  // 完整 GitHub URL
   const urlMatch = input.match(
     /github\.com\/([^/]+\/[^/]+?)(?:\/tree\/([^/]+))?(?:\/|$)/
   );
@@ -238,69 +216,215 @@ function parseRepoInput(input) {
     return { repo: urlMatch[1].replace(/\.git$/, ''), branch: urlMatch[2] || null };
   }
 
-  // owner/repo@branch
   const atMatch = input.match(/^([^@\s]+)@([^@\s]+)$/);
   if (atMatch) return { repo: atMatch[1], branch: atMatch[2] };
 
-  // owner/repo
   if (/^[\w.-]+\/[\w.-]+$/.test(input)) return { repo: input, branch: null };
 
   return null;
 }
 
 // ============================================
-// 远程仓库：下载 ZIP
+// 远程仓库：通过 GitHub API 获取文件内容
+// 完全避开 ZIP 下载的 CORS 问题
 // ============================================
 
-async function fetchRepoZip(repo, preferredBranch, token) {
+/**
+ * 获取仓库默认分支
+ */
+async function getDefaultBranch(repo, headers) {
+  const res = await fetch(`https://api.github.com/repos/${repo}`, { headers });
+
+  if (res.status === 404) throw new Error(`仓库不存在: ${repo}`);
+  if (res.status === 403 || res.status === 429) {
+    throw new Error('GitHub API 限流，请填写 Token 后重试（每小时 60→5000 次）');
+  }
+  if (!res.ok) throw new Error(`获取仓库信息失败 (HTTP ${res.status})`);
+
+  const info = await res.json();
+  return info.default_branch || 'main';
+}
+
+/**
+ * 获取文件树（recursive）
+ */
+async function getFileTree(repo, branch, headers) {
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`,
+    { headers }
+  );
+
+  if (res.status === 404) throw new Error(`分支不存在: ${branch}`);
+  if (res.status === 403 || res.status === 429) {
+    throw new Error('GitHub API 限流，请填写 Token 后重试');
+  }
+  if (!res.ok) throw new Error(`获取文件树失败 (HTTP ${res.status})`);
+
+  const data = await res.json();
+
+  if (data.truncated) {
+    // 仓库超过 100k 文件，tree 被截断
+    console.warn('[Remote] Tree truncated, large repo');
+  }
+
+  // 只取文件（type === 'blob'），过滤掉目录
+  return data.tree.filter(item => item.type === 'blob');
+}
+
+/**
+ * 已知二进制扩展名，跳过不请求内容
+ */
+const BINARY_EXTS = new Set([
+  '.jpg','.jpeg','.png','.gif','.webp','.ico','.bmp','.tiff','.avif',
+  '.mp4','.mp3','.wav','.ogg','.webm','.mov','.avi','.mkv','.aac','.flac',
+  '.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx',
+  '.zip','.tar','.gz','.7z','.rar','.bz2','.xz',
+  '.exe','.dll','.so','.dylib','.bin','.wasm',
+  '.woff','.woff2','.ttf','.eot','.otf',
+  '.db','.sqlite','.sqlite3',
+  '.pyc','.class','.jar','.apk','.ipa',
+  '.map','.psd','.ai','.sketch','.fig','.blend',
+]);
+
+/**
+ * 需要跳过的目录前缀（与 filter.js 的 DEFAULT_IGNORE_PATTERNS 对齐）
+ */
+const SKIP_PREFIXES = [
+  'node_modules/', 'bower_components/', 'vendor/',
+  '.git/', '.svn/', '.hg/',
+  'dist/', 'build/', 'out/', '.next/', '.nuxt/', 'coverage/',
+  '.vscode/', '.idea/', '.cache/', '.turbo/', '.parcel-cache/',
+  'logs/', 'tmp/', 'temp/',
+];
+
+function shouldSkipPath(path) {
+  // 跳过目录前缀
+  if (SKIP_PREFIXES.some(p => path.startsWith(p) || path.includes('/' + p))) {
+    return true;
+  }
+  // 跳过二进制扩展名
+  const dot = path.lastIndexOf('.');
+  if (dot > 0) {
+    const ext = path.slice(dot).toLowerCase();
+    if (BINARY_EXTS.has(ext)) return true;
+  }
+  // 跳过超大文件（size 字段来自 tree API，单位字节）
+  return false;
+}
+
+/**
+ * 通过 GitHub Blob API 获取单个文件内容
+ * 返回解码后的文本字符串
+ */
+async function fetchFileContent(repo, sha, headers) {
+  const res = await fetch(
+    `https://api.github.com/repos/${repo}/git/blobs/${sha}`,
+    { headers }
+  );
+  if (!res.ok) throw new Error(`获取文件失败 (HTTP ${res.status})`);
+
+  const data = await res.json();
+
+  // GitHub Blob API 返回 base64 编码的内容
+  if (data.encoding === 'base64') {
+    // 解码 base64 → 二进制字符串 → UTF-8
+    const binaryStr = atob(data.content.replace(/\n/g, ''));
+    const bytes     = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+    // 用 TextDecoder 正确处理 UTF-8
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      return new TextDecoder('latin1').decode(bytes);
+    }
+  }
+
+  // encoding === 'utf-8'（极少数情况）
+  return data.content;
+}
+
+/**
+ * 主入口：通过 GitHub API 获取仓库文件集合
+ * 返回与 parseZip 相同格式的 Map<path, FileEntry>
+ *
+ * 策略：
+ * 1. 获取 file tree（1 次 API 调用）
+ * 2. 预过滤（跳过二进制、忽略目录）
+ * 3. 并发批量获取文件内容（每批 5 个，避免触发限流）
+ */
+async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   const headers = {
     'Accept':               'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  let defaultBranch = preferredBranch;
-  if (!defaultBranch) {
-    try {
-      const infoRes = await fetch(`https://api.github.com/repos/${repo}`, { headers });
-      if (infoRes.ok) {
-        const info    = await infoRes.json();
-        defaultBranch = info.default_branch || 'main';
-      } else if (infoRes.status === 404) {
-        throw new Error(`仓库不存在: ${repo}`);
-      } else if (infoRes.status === 403) {
-        throw new Error('GitHub API 限流，请提供 Token 后重试');
+  // Step 1：获取默认分支
+  onProgress('获取仓库信息...', 10);
+  const defaultBranch = branch || await getDefaultBranch(repo, headers);
+
+  // Step 2：获取文件树
+  onProgress(`获取文件列表 (${repo}@${defaultBranch})...`, 20);
+  const tree = await getFileTree(repo, defaultBranch, headers);
+
+  // Step 3：预过滤
+  const MAX_FILE_SIZE = 500 * 1024; // 500KB，与 filter.js 一致
+  const candidates = tree.filter(item => {
+    if (shouldSkipPath(item.path)) return false;
+    if (item.size > MAX_FILE_SIZE)  return false;
+    return true;
+  });
+
+  if (candidates.length === 0) {
+    throw new Error('过滤后没有可用文件，请检查仓库内容');
+  }
+
+  onProgress(`共 ${candidates.length} 个文件，开始下载内容...`, 30);
+
+  // Step 4：并发批量获取（每批 5 个）
+  const BATCH_SIZE = 5;
+  const files      = new Map();
+  const skipped    = [];
+  let   done       = 0;
+
+  for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
+    const batch = candidates.slice(i, i + BATCH_SIZE);
+
+    await Promise.all(batch.map(async (item) => {
+      try {
+        const content = await fetchFileContent(repo, item.sha, headers);
+        const name    = item.path.split('/').pop();
+        const dot     = name.lastIndexOf('.');
+        const ext     = dot > 0 ? name.slice(dot) : '';
+
+        files.set(item.path, {
+          path:      item.path,
+          content,
+          size:      content.length,
+          name,
+          extension: ext,
+          encoding:  'utf-8',
+        });
+      } catch (err) {
+        skipped.push({ path: item.path, reason: err.message });
       }
-    } catch (e) {
-      if (e.message.includes('仓库') || e.message.includes('限流')) throw e;
-      defaultBranch = 'main';
-    }
+    }));
+
+    done += batch.length;
+    const pct = 30 + Math.round((done / candidates.length) * 60);
+    onProgress(
+      `已下载 ${done} / ${candidates.length} 个文件...`,
+      Math.min(pct, 90)
+    );
   }
 
-  const branchesToTry = [defaultBranch, 'main', 'master'].filter(Boolean);
-  const tried         = new Set();
-
-  for (const branch of branchesToTry) {
-    if (tried.has(branch)) continue;
-    tried.add(branch);
-
-    const url = `https://api.github.com/repos/${repo}/zipball/${branch}`;
-    const res = await fetch(url, { headers });
-
-    if (res.ok) {
-      const blob = await res.blob();
-      return { blob, branch };
-    }
-    if (res.status === 404) continue;
-    if (res.status === 403) throw new Error('GitHub API 限流，请提供 Token 后重试');
-    throw new Error(`下载失败 (HTTP ${res.status})`);
-  }
-
-  throw new Error(`找不到可用分支（尝试了: ${[...tried].join(', ')}）`);
+  return { files, skipped, branch: defaultBranch };
 }
 
 // ============================================
-// 远程仓库处理
+// 远程仓库处理（入口）
 // ============================================
 
 async function handleRemoteFetch() {
@@ -319,28 +443,33 @@ async function handleRemoteFetch() {
   const token = el.githubToken.value.trim() || null;
 
   el.fetchBtn.disabled    = true;
-  el.fetchBtn.textContent = '⏳ 下载中...';
+  el.fetchBtn.textContent = '⏳ 获取中...';
+  el.progressSection.style.display = 'block';
 
   try {
-    setProgress(`正在获取仓库信息: ${parsed.repo}`, 10);
-    el.progressSection.style.display = 'block';
+    const { files, skipped, branch } = await fetchRepoViaAPI(
+      parsed.repo,
+      parsed.branch,
+      token,
+      (text, pct) => setProgress(text, pct)
+    );
 
-    const { blob, branch } = await fetchRepoZip(parsed.repo, parsed.branch, token);
+    setProgress('下载完成！', 100);
 
-    setProgress('下载完成，准备解析...', 30);
+    // 计算总大小（用于显示）
+    let totalBytes = 0;
+    for (const f of files.values()) totalBytes += f.size;
 
-    const fileName = `${parsed.repo.replace('/', '-')}@${branch}.zip`;
-    const file     = new File([blob], fileName, { type: 'application/zip' });
-
-    const v = validateZipData(file);
-    if (!v.valid) throw new Error(v.error);
-
-    state.file        = file;
+    // 存入 state，绕过 ZIP 解析
+    state.remoteFiles = { files, skipped };
+    state.file        = { name: `${parsed.repo}@${branch}.zip` }; // 仅用于文件名
     state.sourceLabel = `${parsed.repo}@${branch}`;
-    showFileInfo(state.sourceLabel, file.size);
 
-    el.progressSection.style.display = 'none';
-    showToast(`✅ 已获取 ${parsed.repo}@${branch}`, 'success');
+    setTimeout(() => {
+      el.progressSection.style.display = 'none';
+      showFileInfo(state.sourceLabel, totalBytes);
+      showToast(`✅ 已获取 ${files.size} 个文件（${parsed.repo}@${branch}）`, 'success');
+    }, 300);
 
   } catch (err) {
     console.error('[Remote]', err);
@@ -364,18 +493,34 @@ function showFileInfo(name, size) {
 }
 
 // ============================================
-// 转换
+// 转换（本地 ZIP 和远程 API 两条路）
 // ============================================
 
 async function handleConvert() {
-  if (!state.file) { showToast('请先选择文件或获取远程仓库'); return; }
+  if (!state.file && !state.remoteFiles) {
+    showToast('请先选择文件或获取远程仓库');
+    return;
+  }
 
   el.optionsSection.style.display = 'none';
   el.convertBtn.disabled          = true;
 
   try {
-    setProgress('正在解析 ZIP 文件...', 15);
-    const { files, skipped } = await parseZip(state.file);
+    let files, skipped;
+
+    if (state.remoteFiles) {
+      // ── 远程模式：文件已经获取好了，直接用 ──
+      setProgress('准备文件...', 20);
+      files   = state.remoteFiles.files;
+      skipped = state.remoteFiles.skipped;
+    } else {
+      // ── 本地模式：解析 ZIP ──
+      setProgress('正在解析 ZIP 文件...', 15);
+      const parsed = await parseZip(state.file);
+      files   = parsed.files;
+      skipped = parsed.skipped;
+    }
+
     state.skipped = skipped;
 
     setProgress('正在过滤文件...', 40);
@@ -391,7 +536,7 @@ async function handleConvert() {
     setProgress('正在生成输出...', 80);
     const meta = {
       skipped:    skipped,
-      sourceFile: state.sourceLabel || state.file.name,
+      sourceFile: state.sourceLabel || state.file?.name || 'unknown',
     };
     const output = convert(filtered, stats, state.format, meta);
     state.output = output;
@@ -418,36 +563,21 @@ function setProgress(text, percent) {
 // 省钱计算器
 // ============================================
 
-/**
- * 根据 token 数量和缓存命中情况，计算每月节省金额
- *
- * @param {number} tokens         - 本次打包的 token 数
- * @param {number} cacheBusters   - 检测到的缓存破坏文件数（0 = 完全可缓存）
- * @returns {string}              - HTML 字符串
- */
 function buildSavingsCard(tokens, cacheBusters) {
-  const DAILY_QUERIES  = 10;   // 假设每天问 10 次
-  const MONTHLY_DAYS   = 22;   // 工作日
-  const totalQueries   = DAILY_QUERIES * MONTHLY_DAYS;
+  const DAILY_QUERIES = 10;
+  const MONTHLY_DAYS  = 22;
+  const totalQueries  = DAILY_QUERIES * MONTHLY_DAYS;
 
-  // 未使用缓存的月费用
-  const costWithout = (tokens / 1_000_000) * PRICING.INPUT_PER_M * totalQueries;
-
-  // 使用缓存的月费用
-  // 第一次：写入费用
+  const costWithout    = (tokens / 1_000_000) * PRICING.INPUT_PER_M * totalQueries;
   const costCacheWrite = (tokens / 1_000_000) * PRICING.CACHE_WRITE_PER_M;
-  // 后续：读取费用
   const costCacheRead  = (tokens / 1_000_000) * PRICING.CACHE_READ_PER_M * (totalQueries - 1);
   const costWith       = costCacheWrite + costCacheRead;
+  const saved          = costWithout - costWith;
+  const savePct        = Math.round((saved / costWithout) * 100);
 
-  const saved      = costWithout - costWith;
-  const savePct    = Math.round((saved / costWithout) * 100);
-
-  // 是否有缓存破坏问题
-  const hasBusters = cacheBusters > 0;
-
-  const statusIcon  = hasBusters ? '⚠️' : '✅';
+  const hasBusters  = cacheBusters > 0;
   const statusColor = hasBusters ? '#f59e0b' : '#10b981';
+  const statusIcon  = hasBusters ? '⚠️' : '✅';
   const statusText  = hasBusters
     ? `检测到 ${cacheBusters} 个文件会破坏缓存，修复后可完全命中缓存`
     : '未检测到缓存破坏向量，缓存可完全命中';
@@ -469,10 +599,12 @@ function buildSavingsCard(tokens, cacheBusters) {
       </div>
       <div class="savings-item savings-highlight">
         <span class="savings-label">每月节省</span>
-        <span class="savings-value savings-good">$${saved.toFixed(2)} <small>(${savePct}%)</small></span>
+        <span class="savings-value savings-good">
+          $${saved.toFixed(2)} <small>(${savePct}%)</small>
+        </span>
       </div>
     </div>
-    <div class="savings-status" style="border-color: ${statusColor}; color: ${statusColor}">
+    <div class="savings-status" style="border-color:${statusColor};color:${statusColor}">
       ${statusIcon} ${statusText}
     </div>
     <p class="savings-footnote">
@@ -491,16 +623,15 @@ function showResults(stats, cacheDetection) {
   el.resultsSection.style.display  = 'block';
   el.resultsSection.classList.add('fade-in');
 
-  // 基础统计
   el.statFiles.textContent  = formatNumber(stats.includedFiles);
   el.statSize.textContent   = formatSize(stats.totalSize);
   el.statTokens.textContent = '~' + formatNumber(Math.ceil(stats.totalSize / 3));
   el.statFormat.textContent = state.format.toUpperCase();
 
-  // 语言分布
   const langEntries = Object.entries(stats.languages)
     .sort(([, a], [, b]) => b - a)
     .slice(0, 8);
+
   el.languageStats.innerHTML = langEntries.length > 0
     ? '<h4 style="margin-bottom:0.5rem">文件类型分布</h4>' +
       langEntries.map(([ext, count]) =>
@@ -511,7 +642,6 @@ function showResults(stats, cacheDetection) {
       ).join('')
     : '';
 
-  // 警告
   if (stats.warnings.length > 0) {
     el.warningsCard.style.display = 'block';
     el.warningsList.innerHTML = stats.warnings.map(w => `<li>${w}</li>`).join('');
@@ -519,13 +649,11 @@ function showResults(stats, cacheDetection) {
     el.warningsCard.style.display = 'none';
   }
 
-  // 省钱计算器（始终显示）
-  const tokens      = Math.ceil(stats.totalSize / 3);
-  const busters     = cacheDetection ? cacheDetection.detected.length : 0;
+  const tokens  = Math.ceil(stats.totalSize / 3);
+  const busters = cacheDetection ? cacheDetection.detected.length : 0;
   el.savingsCard.style.display = 'block';
   el.savingsContent.innerHTML  = buildSavingsCard(tokens, busters);
 
-  // 缓存破坏检测详情
   if (cacheDetection && cacheDetection.detected.length > 0) {
     el.cacheCard.style.display = 'block';
     el.cacheResults.innerHTML  =
@@ -547,7 +675,6 @@ function showResults(stats, cacheDetection) {
     el.cacheCard.style.display = 'none';
   }
 
-  // 输出预览
   el.outputContent.textContent = state.output;
 }
 
@@ -573,7 +700,7 @@ async function copyToClipboard() {
 function downloadFile() {
   if (!state.output) return;
   const ext      = FORMAT_EXTENSIONS[state.format];
-  const baseName = (state.sourceLabel || state.file.name).replace(/\.zip$/i, '');
+  const baseName = (state.sourceLabel || state.file?.name || 'output').replace(/\.zip$/i, '');
   const filename = baseName + ext;
   const blob     = new Blob([state.output], { type: 'text/plain;charset=utf-8' });
   const url      = URL.createObjectURL(blob);
@@ -594,6 +721,7 @@ function resetState() {
     skipped:     [],
     sourceLabel: '',
     lastStats:   null,
+    remoteFiles: null,
   };
 
   el.fileInput.value               = '';
@@ -623,16 +751,14 @@ function resetState() {
 }
 
 // ============================================
-// 扩展消息接收（来自 Chrome Extension）
+// 扩展消息接收（Chrome Extension）
 // ============================================
 
 window.addEventListener('message', async (event) => {
   if (event.data?.type !== 'REPO_COMPRESS_FETCH') return;
-
   const { repo, branch } = event.data;
   if (!repo) return;
 
-  // 自动切换到远程 tab
   el.tabBtns.forEach(b => b.classList.remove('active'));
   document.querySelector('[data-tab="remote"]').classList.add('active');
   el.tabLocal.classList.add('hidden');
