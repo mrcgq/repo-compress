@@ -2,13 +2,10 @@
  * Web UI Application Logic
  *
  * 修复记录：
- * - 消除与 src/core/ 的代码重复，改为直接 import
- * - 修复 escapeCdata bug
- * - 加入省钱计算器展示
- * - 修复远程仓库 Failed to fetch（CORS）问题
- * - 移除文件大小硬性限制，改为警告
- * - 修复 parseRepoInput 地址识别，覆盖所有常见格式
- * - 修复远程模式显示大小：改为显示原始内容总大小，与本地模式逻辑一致
+ * - [本次] 统一两种模式的文件大小显示逻辑
+ *          本地模式：显示解压后原始内容大小（parseZip 完成后更新）
+ *          远程模式：显示下载的原始内容大小（所有文件 size 之和）
+ *          两种模式数字口径一致，用户不再困惑
  */
 
 import { validateZipData, parseZip } from '../core/parser.js';
@@ -40,9 +37,9 @@ let state = {
   skipped:        [],
   sourceLabel:    '',
   lastStats:      null,
-  remoteFiles:    null,   // 原始文件集合（未过滤）
-  remoteFiltered: null,   // 过滤后的文件集合（转换时直接用）
-  remoteStats:    null,   // 过滤后统计信息
+  remoteFiles:    null,
+  remoteFiltered: null,
+  remoteStats:    null,
 };
 
 // ============================================
@@ -188,9 +185,13 @@ el.helpModal.addEventListener('click', e => {
 
 // ============================================
 // 本地文件处理
+//
+// 选文件后先显示"解析中"，
+// parseZip 完成后更新为解压后的真实原始内容大小。
+// 这样和远程模式（下载后原始内容大小）口径完全一致。
 // ============================================
 
-function handleLocalFile(file) {
+async function handleLocalFile(file) {
   if (!file) return;
   if (!file.name.toLowerCase().endsWith('.zip')) {
     showToast('请选择 .zip 格式的文件');
@@ -205,63 +206,78 @@ function handleLocalFile(file) {
   state.remoteStats    = null;
   state.sourceLabel    = file.name;
 
-  // 本地模式：显示 ZIP 压缩包本身的大小
-  showFileInfo(file.name, file.size);
+  // 先显示文件名，大小显示"解析中..."
+  el.fileName.textContent         = file.name;
+  el.fileSize.textContent         = '解析中...';
+  el.fileInfo.style.display       = 'block';
+  el.optionsSection.style.display = 'none'; // 还没解析完，先不显示转换选项
+
+  // 后台解析 ZIP，获取解压后原始内容大小
+  try {
+    el.progressSection.style.display = 'block';
+    setProgress('正在解析 ZIP 文件...', 30);
+
+    const { files, skipped } = await parseZip(file);
+
+    // 计算解压后所有文件的原始内容总大小
+    let rawTotalSize = 0;
+    for (const f of files.values()) rawTotalSize += f.size;
+
+    // 缓存解析结果，转换时直接用，不用再解析一次
+    state.localParsed = { files, skipped };
+
+    setProgress('解析完成！', 100);
+
+    setTimeout(() => {
+      el.progressSection.style.display = 'none';
+      // 更新为解压后原始内容大小
+      el.fileSize.textContent         = formatSize(rawTotalSize);
+      el.optionsSection.style.display = 'block';
+    }, 300);
+
+  } catch (err) {
+    console.error('[LocalFile]', err);
+    el.progressSection.style.display = 'none';
+    el.fileInfo.style.display        = 'none';
+    showToast(`解析失败：${err.message}`);
+    state.file = null;
+  }
 }
 
 // ============================================
 // 远程仓库：解析输入（全格式覆盖版）
-//
-// 支持的格式：
-//   owner/repo
-//   owner/repo@branch
-//   owner/repo/tree/branch
-//   owner/repo/tree/branch/path/to/folder
-//   owner/repo/blob/branch/path/to/file.js
-//   owner/repo/commits/branch
-//   owner/repo/releases/tag/v1.0.0
-//   github.com/owner/repo
-//   github.com/owner/repo/tree/branch
-//   https://github.com/owner/repo
-//   https://github.com/owner/repo.git
-//   https://github.com/owner/repo/tree/branch
-//   https://github.com/owner/repo/blob/branch/file.js
-//   http://github.com/owner/repo
-//   git@github.com:owner/repo.git
-//   git@github.com:owner/repo
 // ============================================
 
 function parseRepoInput(raw) {
   let input = raw.trim();
   if (!input) return null;
 
-  // 1. SSH 格式：git@github.com:owner/repo.git
+  // SSH 格式：git@github.com:owner/repo.git
   const sshMatch = input.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i);
   if (sshMatch) {
     return { repo: `${sshMatch[1]}/${sshMatch[2]}`, branch: null };
   }
 
-  // 2. 去掉协议头
+  // 去掉协议头
   input = input.replace(/^https?:\/\//i, '');
 
-  // 3. 去掉 github.com/ 前缀
+  // 去掉 github.com/ 前缀
   input = input.replace(/^(?:www\.)?github\.com\//i, '');
 
-  // 4. 去掉末尾 .git
+  // 去掉末尾 .git
   input = input.replace(/\.git$/, '');
 
-  // 5. 去掉末尾斜杠
+  // 去掉末尾斜杠
   input = input.replace(/\/+$/, '');
 
-  // 6. 拆分路径段
+  // 拆分路径段
   const parts = input.split('/');
-
   if (parts.length < 2) return null;
 
   const owner = parts[0];
   let   repo  = parts[1];
 
-  // owner/repo 里可能带 @branch
+  // 处理 owner/repo@branch 格式
   let branch = null;
   const atIdx = repo.indexOf('@');
   if (atIdx !== -1) {
@@ -269,24 +285,16 @@ function parseRepoInput(raw) {
     repo   = repo.slice(0, atIdx);
   }
 
-  // 合法性校验
   if (!owner || !repo) return null;
   if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
 
   const repoFullName = `${owner}/${repo}`;
 
-  // 已从 @branch 拿到分支
-  if (branch) {
-    return { repo: repoFullName, branch };
-  }
+  if (branch) return { repo: repoFullName, branch };
+  if (parts.length === 2) return { repo: repoFullName, branch: null };
 
-  // 只有 owner/repo
-  if (parts.length === 2) {
-    return { repo: repoFullName, branch: null };
-  }
-
-  // 解析第三段
-  const pathType = parts[2];
+  // 解析第三段（路径类型）
+  const pathType   = parts[2];
   const BRANCH_AFTER = new Set([
     'tree', 'blob', 'commits', 'commit', 'compare', 'blame',
   ]);
@@ -295,23 +303,20 @@ function parseRepoInput(raw) {
     return { repo: repoFullName, branch: parts[3] };
   }
 
-  // 其他页面路径（releases、pulls、issues 等），忽略路径
   return { repo: repoFullName, branch: null };
 }
 
 // ============================================
-// 远程仓库：通过 GitHub API 获取文件内容
+// 远程仓库：GitHub API 获取文件
 // ============================================
 
 async function getDefaultBranch(repo, headers) {
   const res = await fetch(`https://api.github.com/repos/${repo}`, { headers });
-
   if (res.status === 404) throw new Error(`仓库不存在: ${repo}`);
   if (res.status === 403 || res.status === 429) {
     throw new Error('GitHub API 限流，请填写 Token 后重试（每小时 60→5000 次）');
   }
   if (!res.ok) throw new Error(`获取仓库信息失败 (HTTP ${res.status})`);
-
   const info = await res.json();
   return info.default_branch || 'main';
 }
@@ -321,18 +326,13 @@ async function getFileTree(repo, branch, headers) {
     `https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`,
     { headers }
   );
-
   if (res.status === 404) throw new Error(`分支不存在: ${branch}`);
   if (res.status === 403 || res.status === 429) {
     throw new Error('GitHub API 限流，请填写 Token 后重试');
   }
   if (!res.ok) throw new Error(`获取文件树失败 (HTTP ${res.status})`);
-
   const data = await res.json();
-  if (data.truncated) {
-    console.warn('[Remote] Tree truncated, large repo');
-  }
-
+  if (data.truncated) console.warn('[Remote] Tree truncated, large repo');
   return data.tree.filter(item => item.type === 'blob');
 }
 
@@ -357,14 +357,9 @@ const SKIP_PREFIXES = [
 ];
 
 function shouldSkipPath(path) {
-  if (SKIP_PREFIXES.some(p => path.startsWith(p) || path.includes('/' + p))) {
-    return true;
-  }
+  if (SKIP_PREFIXES.some(p => path.startsWith(p) || path.includes('/' + p))) return true;
   const dot = path.lastIndexOf('.');
-  if (dot > 0) {
-    const ext = path.slice(dot).toLowerCase();
-    if (BINARY_EXTS.has(ext)) return true;
-  }
+  if (dot > 0 && BINARY_EXTS.has(path.slice(dot).toLowerCase())) return true;
   return false;
 }
 
@@ -374,22 +369,18 @@ async function fetchFileContent(repo, sha, headers) {
     { headers }
   );
   if (!res.ok) throw new Error(`获取文件失败 (HTTP ${res.status})`);
-
   const data = await res.json();
 
   if (data.encoding === 'base64') {
     const binaryStr = atob(data.content.replace(/\n/g, ''));
     const bytes     = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) {
-      bytes[i] = binaryStr.charCodeAt(i);
-    }
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
     try {
       return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
       return new TextDecoder('latin1').decode(bytes);
     }
   }
-
   return data.content;
 }
 
@@ -407,15 +398,11 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   const tree = await getFileTree(repo, defaultBranch, headers);
 
   const MAX_FILE_SIZE = 2 * 1024 * 1024;
-  const candidates = tree.filter(item => {
-    if (shouldSkipPath(item.path))  return false;
-    if (item.size > MAX_FILE_SIZE)  return false;
-    return true;
-  });
+  const candidates = tree.filter(item =>
+    !shouldSkipPath(item.path) && item.size <= MAX_FILE_SIZE
+  );
 
-  if (candidates.length === 0) {
-    throw new Error('过滤后没有可用文件，请检查仓库内容');
-  }
+  if (candidates.length === 0) throw new Error('过滤后没有可用文件，请检查仓库内容');
 
   onProgress(`共 ${candidates.length} 个文件，开始下载内容...`, 30);
 
@@ -433,14 +420,9 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
         const name    = item.path.split('/').pop();
         const dot     = name.lastIndexOf('.');
         const ext     = dot > 0 ? name.slice(dot) : '';
-
         files.set(item.path, {
-          path:      item.path,
-          content,
-          size:      content.length,
-          name,
-          extension: ext,
-          encoding:  'utf-8',
+          path: item.path, content,
+          size: content.length, name, extension: ext, encoding: 'utf-8',
         });
       } catch (err) {
         skipped.push({ path: item.path, reason: err.message });
@@ -449,10 +431,7 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
 
     done += batch.length;
     const pct = 30 + Math.round((done / candidates.length) * 60);
-    onProgress(
-      `已下载 ${done} / ${candidates.length} 个文件...`,
-      Math.min(pct, 90)
-    );
+    onProgress(`已下载 ${done} / ${candidates.length} 个文件...`, Math.min(pct, 90));
   }
 
   return { files, skipped, branch: defaultBranch };
@@ -464,10 +443,7 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
 
 async function handleRemoteFetch() {
   const input = el.repoUrl.value.trim();
-  if (!input) {
-    showToast('请输入仓库地址，例如：owner/repo');
-    return;
-  }
+  if (!input) { showToast('请输入仓库地址，例如：owner/repo'); return; }
 
   const parsed = parseRepoInput(input);
   if (!parsed) {
@@ -482,43 +458,38 @@ async function handleRemoteFetch() {
   el.progressSection.style.display = 'block';
 
   try {
-    // Step 1：获取所有文件内容
     const { files, skipped, branch } = await fetchRepoViaAPI(
-      parsed.repo,
-      parsed.branch,
-      token,
+      parsed.repo, parsed.branch, token,
       (text, pct) => setProgress(text, pct)
     );
 
-    // Step 2：计算原始内容总大小（所有下载文件，未过滤）
-    // 这是"仓库原始内容大小"，对应本地模式的"ZIP 压缩包大小"
+    // 计算原始内容总大小（所有下载文件，未过滤）
+    // 口径：和本地模式"解压后原始内容大小"完全一致
     let rawTotalSize = 0;
     for (const f of files.values()) rawTotalSize += f.size;
 
-    // Step 3：提前过滤，缓存结果，转换时直接用（避免重复过滤）
+    // 提前过滤，缓存结果
     setProgress('过滤文件...', 92);
     const { filtered, stats } = filterFiles(files);
 
     setProgress('完成！', 100);
 
-    // 存入 state
     state.remoteFiles    = { files, skipped };
     state.remoteFiltered = filtered;
     state.remoteStats    = stats;
+    state.localParsed    = null;
     state.file           = { name: `${parsed.repo}@${branch}.zip` };
     state.sourceLabel    = `${parsed.repo}@${branch}`;
 
     setTimeout(() => {
       el.progressSection.style.display = 'none';
+      // 显示原始内容总大小（未过滤），与本地模式"解压后原始内容大小"一致
+      el.fileName.textContent         = state.sourceLabel;
+      el.fileSize.textContent         = formatSize(rawTotalSize);
+      el.fileInfo.style.display       = 'block';
+      el.optionsSection.style.display = 'block';
 
-      // 显示原始内容总大小（未过滤），与本地模式"ZIP大小"对齐
-      // 让用户看到的是"仓库有多大"，而不是"过滤后剩多少"
-      showFileInfo(state.sourceLabel, rawTotalSize);
-
-      showToast(
-        `✅ 已获取 ${files.size} 个文件（${parsed.repo}@${branch}）`,
-        'success'
-      );
+      showToast(`✅ 已获取 ${files.size} 个文件（${parsed.repo}@${branch}）`, 'success');
     }, 300);
 
   } catch (err) {
@@ -529,18 +500,6 @@ async function handleRemoteFetch() {
     el.fetchBtn.disabled    = false;
     el.fetchBtn.textContent = '🌐 获取仓库';
   }
-}
-
-// ============================================
-// 共用：显示文件信息
-// 两种模式统一格式，只显示大小，不加额外标注
-// ============================================
-
-function showFileInfo(name, size) {
-  el.fileName.textContent         = name;
-  el.fileSize.textContent         = formatSize(size);
-  el.fileInfo.style.display       = 'block';
-  el.optionsSection.style.display = 'block';
 }
 
 // ============================================
@@ -560,17 +519,25 @@ async function handleConvert() {
     let filtered, stats, skipped;
 
     if (state.remoteFiltered) {
-      // 远程模式：过滤已在 handleRemoteFetch 里跑完，直接用缓存
+      // 远程模式：直接用缓存的过滤结果
       setProgress('准备文件...', 30);
       filtered = state.remoteFiltered;
       stats    = state.remoteStats;
       skipped  = state.remoteFiles.skipped;
+
+    } else if (state.localParsed) {
+      // 本地模式：parseZip 已在 handleLocalFile 里完成，直接用缓存
+      setProgress('正在过滤文件...', 40);
+      const result = filterFiles(state.localParsed.files);
+      filtered = result.filtered;
+      stats    = result.stats;
+      skipped  = state.localParsed.skipped;
+
     } else {
-      // 本地 ZIP 模式
+      // 兜底：重新解析（理论上不会走到这里）
       setProgress('正在解析 ZIP 文件...', 15);
       const parsed = await parseZip(state.file);
       skipped = parsed.skipped;
-
       setProgress('正在过滤文件...', 40);
       const result = filterFiles(parsed.files);
       filtered = result.filtered;
@@ -688,10 +655,7 @@ function showResults(stats, cacheDetection) {
   el.languageStats.innerHTML = langEntries.length > 0
     ? '<h4 style="margin-bottom:0.5rem">文件类型分布</h4>' +
       langEntries.map(([ext, count]) =>
-        `<div class="language-item">
-           <span>${ext}</span>
-           <span>${count} 个文件</span>
-         </div>`
+        `<div class="language-item"><span>${ext}</span><span>${count} 个文件</span></div>`
       ).join('')
     : '';
 
@@ -718,10 +682,8 @@ function showResults(stats, cacheDetection) {
       '<summary style="cursor:pointer;font-size:0.875rem">查看详细文件列表</summary>' +
       '<ul style="margin-left:1.25rem;margin-top:0.5rem;font-size:0.8rem">' +
       cacheDetection.detected.map(d =>
-        `<li>
-           <code>${d.path}</code>
-           <span class="cache-severity ${d.severity.toLowerCase()}">${d.severity}</span>
-         </li>`
+        `<li><code>${d.path}</code>
+         <span class="cache-severity ${d.severity.toLowerCase()}">${d.severity}</span></li>`
       ).join('') +
       '</ul></details>';
   } else {
@@ -778,6 +740,7 @@ function resetState() {
     remoteFiles:    null,
     remoteFiltered: null,
     remoteStats:    null,
+    localParsed:    null,
   };
 
   el.fileInput.value               = '';
