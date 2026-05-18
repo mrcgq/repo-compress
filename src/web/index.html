@@ -23,16 +23,13 @@
 
   <main class="container">
 
-    <!-- Upload Zone -->
     <section class="upload-section">
 
-      <!-- Tab 切换：本地 / 远程 -->
       <div class="input-tabs">
         <button class="tab-btn active" data-tab="local">📁 本地 ZIP</button>
         <button class="tab-btn" data-tab="remote">🌐 远程仓库</button>
       </div>
 
-      <!-- 本地上传 -->
       <div class="tab-panel" id="tab-local">
         <div id="dropzone" class="dropzone">
           <div class="dropzone-content">
@@ -48,7 +45,6 @@
         </div>
       </div>
 
-      <!-- 远程仓库 -->
       <div class="tab-panel hidden" id="tab-remote">
         <div class="remote-section">
           <div class="remote-input-group">
@@ -96,7 +92,6 @@
         </div>
       </div>
 
-      <!-- 文件信息（本地/远程共用） -->
       <div id="fileInfo" class="file-info" style="display: none;">
         <div class="file-info-header">
           <span id="fileName" class="file-name"></span>
@@ -106,7 +101,6 @@
       </div>
     </section>
 
-    <!-- Options -->
     <section class="options-section" id="optionsSection" style="display: none;">
       <h3>⚙️ 转换选项</h3>
 
@@ -153,7 +147,6 @@
       </button>
     </section>
 
-    <!-- Progress -->
     <section id="progressSection" class="progress-section" style="display: none;">
       <div class="progress-bar">
         <div id="progressFill" class="progress-fill"></div>
@@ -161,10 +154,8 @@
       <p id="progressText" class="progress-text">正在解析 ZIP 文件...</p>
     </section>
 
-    <!-- Results -->
     <section id="resultsSection" class="results-section" style="display: none;">
 
-      <!-- 基础统计 -->
       <div class="stats-card">
         <h3>📊 统计信息</h3>
         <div class="stats-grid">
@@ -188,25 +179,21 @@
         <div id="languageStats" class="language-stats"></div>
       </div>
 
-      <!-- 警告 -->
       <div id="warningsCard" class="warnings-card" style="display: none;">
         <h4>⚠️ 警告</h4>
         <ul id="warningsList" class="warnings-list"></ul>
       </div>
 
-      <!-- 省钱计算器（核心差异化展示） -->
       <div id="savingsCard" class="savings-card" style="display: none;">
         <h4>💰 Prompt Cache 省钱估算</h4>
         <div id="savingsContent"></div>
       </div>
 
-      <!-- 缓存破坏检测详情 -->
       <div id="cacheCard" class="cache-card" style="display: none;">
         <h4>🔍 缓存破坏检测详情</h4>
         <div id="cacheResults"></div>
       </div>
 
-      <!-- 输出 -->
       <div class="output-card">
         <div class="output-header">
           <h3>📄 转换结果</h3>
@@ -244,7 +231,6 @@
     </div>
   </footer>
 
-  <!-- Help Modal -->
   <div id="helpModal" class="modal" style="display: none;">
     <div class="modal-content">
       <div class="modal-header">
@@ -280,7 +266,7 @@
         </p>
         <p style="margin-top:0.5rem">
           但代码里如果有时间戳、UUID、Session ID 等每次都不一样的内容，
-          缓存就永远命中不了。repo-compress 会自动检测这些"定时炸弹"并告诉你。
+          缓存就永远命中不了。repo-compress 会自动检测这些内容并告诉你。
         </p>
 
         <h3>智能过滤</h3>
@@ -296,13 +282,11 @@
     </div>
   </div>
 
-  <!-- Toast -->
   <div id="toast" class="toast"></div>
 
-  <!-- JSZip（必须在 app.js 之前加载） -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- ⚠️ 不需要 CDN jszip：Vite 构建时已从 node_modules 打包 -->
+  <!-- 开发模式下 parser.js 通过 import JSZip from 'jszip' 直接使用 -->
 
-  <!-- App（type="module" 支持 import） -->
   <script type="module" src="app.js"></script>
 
 </body>
