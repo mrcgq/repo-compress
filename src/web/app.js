@@ -5,8 +5,8 @@
  * - 消除与 src/core/ 的代码重复，改为直接 import
  * - 修复 escapeCdata bug
  * - 加入省钱计算器展示
- * - [本次] 修复远程仓库 Failed to fetch（CORS）问题
- *          改用 GitHub Contents API + Tree API，完全避开 ZIP 下载的 CORS 限制
+ * - 修复远程仓库 Failed to fetch（CORS）问题
+ * - [本次] 移除文件大小硬性限制，改为警告
  */
 
 import { validateZipData, parseZip } from '../core/parser.js';
@@ -38,7 +38,6 @@ let state = {
   skipped:     [],
   sourceLabel: '',
   lastStats:   null,
-  // 远程模式下直接存文件集合，跳过 ZIP 解析
   remoteFiles: null,
 };
 
@@ -193,6 +192,8 @@ function handleLocalFile(file) {
     showToast('请选择 .zip 格式的文件');
     return;
   }
+
+  // validateZipData 只做格式校验，不限制大小
   const v = validateZipData(file);
   if (!v.valid) { showToast(v.error); return; }
 
@@ -229,9 +230,6 @@ function parseRepoInput(input) {
 // 完全避开 ZIP 下载的 CORS 问题
 // ============================================
 
-/**
- * 获取仓库默认分支
- */
 async function getDefaultBranch(repo, headers) {
   const res = await fetch(`https://api.github.com/repos/${repo}`, { headers });
 
@@ -245,9 +243,6 @@ async function getDefaultBranch(repo, headers) {
   return info.default_branch || 'main';
 }
 
-/**
- * 获取文件树（recursive）
- */
 async function getFileTree(repo, branch, headers) {
   const res = await fetch(
     `https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`,
@@ -261,19 +256,13 @@ async function getFileTree(repo, branch, headers) {
   if (!res.ok) throw new Error(`获取文件树失败 (HTTP ${res.status})`);
 
   const data = await res.json();
-
   if (data.truncated) {
-    // 仓库超过 100k 文件，tree 被截断
     console.warn('[Remote] Tree truncated, large repo');
   }
 
-  // 只取文件（type === 'blob'），过滤掉目录
   return data.tree.filter(item => item.type === 'blob');
 }
 
-/**
- * 已知二进制扩展名，跳过不请求内容
- */
 const BINARY_EXTS = new Set([
   '.jpg','.jpeg','.png','.gif','.webp','.ico','.bmp','.tiff','.avif',
   '.mp4','.mp3','.wav','.ogg','.webm','.mov','.avi','.mkv','.aac','.flac',
@@ -286,9 +275,6 @@ const BINARY_EXTS = new Set([
   '.map','.psd','.ai','.sketch','.fig','.blend',
 ]);
 
-/**
- * 需要跳过的目录前缀（与 filter.js 的 DEFAULT_IGNORE_PATTERNS 对齐）
- */
 const SKIP_PREFIXES = [
   'node_modules/', 'bower_components/', 'vendor/',
   '.git/', '.svn/', '.hg/',
@@ -298,24 +284,17 @@ const SKIP_PREFIXES = [
 ];
 
 function shouldSkipPath(path) {
-  // 跳过目录前缀
   if (SKIP_PREFIXES.some(p => path.startsWith(p) || path.includes('/' + p))) {
     return true;
   }
-  // 跳过二进制扩展名
   const dot = path.lastIndexOf('.');
   if (dot > 0) {
     const ext = path.slice(dot).toLowerCase();
     if (BINARY_EXTS.has(ext)) return true;
   }
-  // 跳过超大文件（size 字段来自 tree API，单位字节）
   return false;
 }
 
-/**
- * 通过 GitHub Blob API 获取单个文件内容
- * 返回解码后的文本字符串
- */
 async function fetchFileContent(repo, sha, headers) {
   const res = await fetch(
     `https://api.github.com/repos/${repo}/git/blobs/${sha}`,
@@ -325,15 +304,12 @@ async function fetchFileContent(repo, sha, headers) {
 
   const data = await res.json();
 
-  // GitHub Blob API 返回 base64 编码的内容
   if (data.encoding === 'base64') {
-    // 解码 base64 → 二进制字符串 → UTF-8
     const binaryStr = atob(data.content.replace(/\n/g, ''));
     const bytes     = new Uint8Array(binaryStr.length);
     for (let i = 0; i < binaryStr.length; i++) {
       bytes[i] = binaryStr.charCodeAt(i);
     }
-    // 用 TextDecoder 正确处理 UTF-8
     try {
       return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
@@ -341,19 +317,9 @@ async function fetchFileContent(repo, sha, headers) {
     }
   }
 
-  // encoding === 'utf-8'（极少数情况）
   return data.content;
 }
 
-/**
- * 主入口：通过 GitHub API 获取仓库文件集合
- * 返回与 parseZip 相同格式的 Map<path, FileEntry>
- *
- * 策略：
- * 1. 获取 file tree（1 次 API 调用）
- * 2. 预过滤（跳过二进制、忽略目录）
- * 3. 并发批量获取文件内容（每批 5 个，避免触发限流）
- */
 async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   const headers = {
     'Accept':               'application/vnd.github+json',
@@ -361,19 +327,17 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  // Step 1：获取默认分支
   onProgress('获取仓库信息...', 10);
   const defaultBranch = branch || await getDefaultBranch(repo, headers);
 
-  // Step 2：获取文件树
   onProgress(`获取文件列表 (${repo}@${defaultBranch})...`, 20);
   const tree = await getFileTree(repo, defaultBranch, headers);
 
-  // Step 3：预过滤
-  const MAX_FILE_SIZE = 500 * 1024; // 500KB，与 filter.js 一致
+  // 单文件大小限制与 constants.js 保持一致（2MB）
+  const MAX_FILE_SIZE = 2 * 1024 * 1024;
   const candidates = tree.filter(item => {
-    if (shouldSkipPath(item.path)) return false;
-    if (item.size > MAX_FILE_SIZE)  return false;
+    if (shouldSkipPath(item.path))    return false;
+    if (item.size > MAX_FILE_SIZE)    return false;
     return true;
   });
 
@@ -383,7 +347,6 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
 
   onProgress(`共 ${candidates.length} 个文件，开始下载内容...`, 30);
 
-  // Step 4：并发批量获取（每批 5 个）
   const BATCH_SIZE = 5;
   const files      = new Map();
   const skipped    = [];
@@ -456,13 +419,11 @@ async function handleRemoteFetch() {
 
     setProgress('下载完成！', 100);
 
-    // 计算总大小（用于显示）
     let totalBytes = 0;
     for (const f of files.values()) totalBytes += f.size;
 
-    // 存入 state，绕过 ZIP 解析
     state.remoteFiles = { files, skipped };
-    state.file        = { name: `${parsed.repo}@${branch}.zip` }; // 仅用于文件名
+    state.file        = { name: `${parsed.repo}@${branch}.zip` };
     state.sourceLabel = `${parsed.repo}@${branch}`;
 
     setTimeout(() => {
@@ -493,7 +454,7 @@ function showFileInfo(name, size) {
 }
 
 // ============================================
-// 转换（本地 ZIP 和远程 API 两条路）
+// 转换
 // ============================================
 
 async function handleConvert() {
@@ -509,12 +470,10 @@ async function handleConvert() {
     let files, skipped;
 
     if (state.remoteFiles) {
-      // ── 远程模式：文件已经获取好了，直接用 ──
       setProgress('准备文件...', 20);
       files   = state.remoteFiles.files;
       skipped = state.remoteFiles.skipped;
     } else {
-      // ── 本地模式：解析 ZIP ──
       setProgress('正在解析 ZIP 文件...', 15);
       const parsed = await parseZip(state.file);
       files   = parsed.files;
