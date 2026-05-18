@@ -35,13 +35,12 @@ describe('Parser', () => {
     assert.strictEqual(result.valid, true);
   });
 
-  test('validateZipData - should reject oversized files', () => {
-    // Uint8Array 是 validateZipData 支持的合法类型
-    // Node.js 对大 TypedArray 做懒分配，不会真正占用物理内存
-    const oversized = new Uint8Array(FILE_SIZE_LIMITS.MAX_TOTAL_SIZE + 1);
-    const result = validateZipData(oversized);
-    assert.strictEqual(result.valid, false);
-    assert.match(result.error, /too large/);
+  test('validateZipData - should accept large files without size limit', () => {
+    // validateZipData 不再限制文件大小
+    // 大文件由 filter.js 在过滤阶段以警告方式处理，不硬性拒绝
+    const largeBuffer = new Uint8Array(FILE_SIZE_LIMITS.WARN_TOTAL_SIZE + 1);
+    const result = validateZipData(largeBuffer);
+    assert.strictEqual(result.valid, true, 'Large files should be accepted, not rejected');
   });
 });
 
