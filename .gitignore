@@ -1,0 +1,41 @@
+# 依赖
+node_modules/
+# package-lock.json  ← 删掉这行，必须提交到仓库
+yarn.lock
+pnpm-lock.yaml
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+
+# 测试
+coverage/
+.nyc_output/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志
+*.log
+npm-debug.log*
+logs/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# 测试用的 ZIP 文件
+test/**/*.zip
+examples/**/*.zip
+
+# 输出文件（开发时）
+*.output.md
+*.output.xml
+*.output.txt

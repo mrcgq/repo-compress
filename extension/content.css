@@ -1,0 +1,106 @@
+/* repo-compress - GitHub 注入样式 */
+
+/* ── 主按钮 ───────────────────────────────── */
+#rc-compress-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-left: 8px;
+  white-space: nowrap;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 20px;
+  vertical-align: middle;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+
+#rc-compress-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(37,99,235,0.35);
+}
+
+#rc-compress-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+#rc-compress-btn:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+  transform: none;
+}
+
+#rc-compress-btn.rc-btn-loading {
+  background: #f59e0b;
+}
+
+.rc-btn-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ── 通知 ─────────────────────────────────── */
+#rc-notification {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  z-index: 99999;
+  max-width: 360px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  animation: rc-slide-in 0.3s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.rc-notification-success {
+  background: #10b981;
+  color: white;
+}
+
+.rc-notification-warning {
+  background: #f59e0b;
+  color: white;
+}
+
+.rc-notification-error {
+  background: #ef4444;
+  color: white;
+}
+
+.rc-notification-info {
+  background: #2563eb;
+  color: white;
+}
+
+@keyframes rc-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── 暗色模式兼容 ─────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  #rc-compress-btn {
+    background: #3b82f6;
+  }
+  #rc-compress-btn:hover:not(:disabled) {
+    background: #2563eb;
+  }
+}

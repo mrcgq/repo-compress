@@ -1,0 +1,37 @@
+{
+  "name": "repo-compress",
+  "version": "1.0.0",
+  "description": "将 GitHub 项目 ZIP 压缩包转换为 AI 友好的单文件格式（Markdown/XML/TXT）",
+  "type": "module",
+  "main": "src/cli/index.js",
+  "bin": {
+    "repo-compress": "src/cli/index.js"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "cli": "node src/cli/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "code-analysis",
+    "ai-prompt",
+    "repository",
+    "compression",
+    "markdown",
+    "claude",
+    "chatgpt"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}

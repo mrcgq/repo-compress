@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>repo-compress | ZIP to AI Prompt</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <header class="header">
+    <div class="container">
+      <h1>🗜️ repo-compress</h1>
+      <p class="subtitle">将 GitHub 项目 ZIP 转换为 AI 友好的单文件格式</p>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- Upload Zone -->
+    <section class="upload-section">
+
+      <!-- Tab 切换：本地 / 远程 -->
+      <div class="input-tabs">
+        <button class="tab-btn active" data-tab="local">📁 本地 ZIP</button>
+        <button class="tab-btn" data-tab="remote">🌐 远程仓库</button>
+      </div>
+
+      <!-- 本地上传 -->
+      <div class="tab-panel" id="tab-local">
+        <div id="dropzone" class="dropzone">
+          <div class="dropzone-content">
+            <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <h2>拖入 ZIP 文件</h2>
+            <p>或点击选择文件</p>
+            <p class="file-hint">支持 GitHub 项目导出的 ZIP 文件（最大 10MB）</p>
+            <input type="file" id="fileInput" accept=".zip" hidden>
+          </div>
+        </div>
+      </div>
+
+      <!-- 远程仓库 -->
+      <div class="tab-panel hidden" id="tab-remote">
+        <div class="remote-section">
+          <div class="remote-input-group">
+            <span class="remote-prefix">github.com/</span>
+            <input
+              type="text"
+              id="repoUrl"
+              class="remote-input"
+              placeholder="owner/repo 或 owner/repo@branch"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+
+          <!-- GitHub Token（可选，避免 rate limit） -->
+          <div class="token-group">
+            <input
+              type="password"
+              id="githubToken"
+              class="token-input"
+              placeholder="GitHub Token（可选，避免 API 限流）"
+              autocomplete="off"
+            />
+            <button class="btn-token-help" id="tokenHelpBtn" title="为什么需要 Token？">?</button>
+          </div>
+
+          <div class="token-hint" id="tokenHint" style="display:none;">
+            <p>GitHub API 每小时限制 60 次未认证请求。</p>
+            <p>Token 仅存储在本地浏览器，不会上传到任何服务器。</p>
+            <p>
+              <a href="https://github.com/settings/tokens/new?scopes=public_repo&description=repo-compress"
+                 target="_blank">点击生成 Token →</a>
+            </p>
+          </div>
+
+          <button id="fetchBtn" class="btn-fetch">
+            🌐 获取仓库
+          </button>
+
+          <div class="remote-examples">
+            <span>示例：</span>
+            <button class="example-btn" data-repo="facebook/react">facebook/react</button>
+            <button class="example-btn" data-repo="vuejs/vue">vuejs/vue</button>
+            <button class="example-btn" data-repo="sindresorhus/awesome">sindresorhus/awesome</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 文件信息（本地/远程共用） -->
+      <div id="fileInfo" class="file-info" style="display: none;">
+        <div class="file-info-header">
+          <span id="fileName" class="file-name"></span>
+          <button id="clearBtn" class="btn-clear" title="清除文件">✕</button>
+        </div>
+        <div id="fileSize" class="file-size"></div>
+      </div>
+    </section>
+
+    <!-- Options -->
+    <section class="options-section" id="optionsSection" style="display: none;">
+      <h3>⚙️ 转换选项</h3>
+
+      <div class="option-group">
+        <label class="option-label">输出格式</label>
+        <div class="format-selector">
+          <label class="format-option">
+            <input type="radio" name="format" value="markdown" checked>
+            <span class="format-badge">
+              <strong>Markdown</strong>
+              <small>适合 ChatGPT / Gemini</small>
+            </span>
+          </label>
+          <label class="format-option">
+            <input type="radio" name="format" value="xml">
+            <span class="format-badge">
+              <strong>XML</strong>
+              <small>适合 Claude（推荐）</small>
+            </span>
+          </label>
+          <label class="format-option">
+            <input type="radio" name="format" value="txt">
+            <span class="format-badge">
+              <strong>纯文本</strong>
+              <small>兼容性最强</small>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="option-group">
+        <label class="option-label">
+          <input type="checkbox" id="detectCache" checked>
+          检测缓存破坏向量（推荐）
+        </label>
+        <p class="option-hint">检测可能影响 AI Prompt 缓存效率的动态内容</p>
+      </div>
+
+      <button id="convertBtn" class="btn-primary">
+        <span>🚀 开始转换</span>
+      </button>
+    </section>
+
+    <!-- Progress -->
+    <section id="progressSection" class="progress-section" style="display: none;">
+      <div class="progress-bar">
+        <div id="progressFill" class="progress-fill"></div>
+      </div>
+      <p id="progressText" class="progress-text">正在解析 ZIP 文件...</p>
+    </section>
+
+    <!-- Results -->
+    <section id="resultsSection" class="results-section" style="display: none;">
+
+      <div class="stats-card">
+        <h3>📊 统计信息</h3>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <span class="stat-label">文件数量</span>
+            <span id="statFiles" class="stat-value">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">总大小</span>
+            <span id="statSize" class="stat-value">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">预估 Token</span>
+            <span id="statTokens" class="stat-value">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">输出格式</span>
+            <span id="statFormat" class="stat-value">-</span>
+          </div>
+        </div>
+        <div id="languageStats" class="language-stats"></div>
+      </div>
+
+      <div id="warningsCard" class="warnings-card" style="display: none;">
+        <h4>⚠️ 警告</h4>
+        <ul id="warningsList" class="warnings-list"></ul>
+      </div>
+
+      <div id="cacheCard" class="cache-card" style="display: none;">
+        <h4>🔍 缓存破坏检测</h4>
+        <div id="cacheResults"></div>
+      </div>
+
+      <div class="output-card">
+        <div class="output-header">
+          <h3>📄 转换结果</h3>
+          <div class="output-actions">
+            <button id="copyBtn" class="btn-secondary">
+              <span id="copyText">📋 复制到剪贴板</span>
+            </button>
+            <button id="downloadBtn" class="btn-secondary">
+              💾 下载文件
+            </button>
+          </div>
+        </div>
+        <div class="output-preview">
+          <pre id="outputContent" class="output-content"></pre>
+        </div>
+      </div>
+
+      <div class="action-footer">
+        <button id="resetBtn" class="btn-outline">← 转换新文件</button>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>
+        开源项目 |
+        <a href="https://github.com/yourusername/repo-compress" target="_blank">GitHub</a> |
+        <a href="#" id="helpLink">使用帮助</a>
+      </p>
+      <p class="footer-note">
+        💡 提示：生成的文件可以直接粘贴给 Claude、ChatGPT 等 AI 进行代码分析
+      </p>
+    </div>
+  </footer>
+
+  <!-- Help Modal -->
+  <div id="helpModal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>📖 使用帮助</h2>
+        <button id="closeModal" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <h3>如何使用？</h3>
+        <ol>
+          <li>
+            <strong>本地 ZIP</strong>：从 GitHub 下载项目的 ZIP 文件
+            （Code → Download ZIP），拖入上方区域
+          </li>
+          <li>
+            <strong>远程仓库</strong>：切换到"远程仓库"标签，输入
+            <code>owner/repo</code> 直接获取
+          </li>
+          <li>选择输出格式，点击"开始转换"</li>
+          <li>复制结果，粘贴给 AI 进行分析</li>
+        </ol>
+        <h3>输出格式选择</h3>
+        <ul>
+          <li><strong>Markdown</strong>：代码高亮、结构清晰，适合 ChatGPT 和 Gemini</li>
+          <li><strong>XML</strong>：边界清晰，Claude 官方推荐格式</li>
+          <li><strong>纯文本</strong>：兼容性最强，适合简单项目</li>
+        </ul>
+        <h3>智能过滤</h3>
+        <p>自动排除：<code>node_modules/</code>、<code>.git/</code>、<code>dist/</code>、
+          <code>build/</code>、二进制文件、媒体文件等。</p>
+        <h3>缓存破坏检测</h3>
+        <p>检测时间戳、UUID、Session ID、环境变量等动态内容，
+          帮助优化 AI Prompt 缓存效率。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
