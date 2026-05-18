@@ -30,6 +30,7 @@
         <button class="tab-btn" data-tab="remote">🌐 远程仓库</button>
       </div>
 
+      <!-- 本地上传 -->
       <div class="tab-panel" id="tab-local">
         <div id="dropzone" class="dropzone">
           <div class="dropzone-content">
@@ -39,12 +40,13 @@
             </svg>
             <h2>拖入 ZIP 文件</h2>
             <p>或点击选择文件</p>
-            <p class="file-hint">支持 GitHub 项目导出的 ZIP 文件（最大 10MB）</p>
+            <p class="file-hint">支持 GitHub 项目导出的 ZIP 文件</p>
             <input type="file" id="fileInput" accept=".zip" hidden>
           </div>
         </div>
       </div>
 
+      <!-- 远程仓库 -->
       <div class="tab-panel hidden" id="tab-remote">
         <div class="remote-section">
           <div class="remote-input-group">
@@ -53,7 +55,7 @@
               type="text"
               id="repoUrl"
               class="remote-input"
-              placeholder="owner/repo 或 owner/repo@branch"
+              placeholder="owner/repo 或粘贴完整 GitHub 链接"
               autocomplete="off"
               spellcheck="false"
             />
@@ -92,6 +94,7 @@
         </div>
       </div>
 
+      <!-- 文件信息（本地/远程共用） -->
       <div id="fileInfo" class="file-info" style="display: none;">
         <div class="file-info-header">
           <span id="fileName" class="file-name"></span>
@@ -101,6 +104,7 @@
       </div>
     </section>
 
+    <!-- Options -->
     <section class="options-section" id="optionsSection" style="display: none;">
       <h3>⚙️ 转换选项</h3>
 
@@ -147,6 +151,7 @@
       </button>
     </section>
 
+    <!-- Progress -->
     <section id="progressSection" class="progress-section" style="display: none;">
       <div class="progress-bar">
         <div id="progressFill" class="progress-fill"></div>
@@ -154,6 +159,7 @@
       <p id="progressText" class="progress-text">正在解析 ZIP 文件...</p>
     </section>
 
+    <!-- Results -->
     <section id="resultsSection" class="results-section" style="display: none;">
 
       <div class="stats-card">
@@ -231,6 +237,7 @@
     </div>
   </footer>
 
+  <!-- Help Modal -->
   <div id="helpModal" class="modal" style="display: none;">
     <div class="modal-content">
       <div class="modal-header">
@@ -246,7 +253,7 @@
           </li>
           <li>
             <strong>远程仓库</strong>：切换到"远程仓库"标签，输入
-            <code>owner/repo</code> 直接获取
+            <code>owner/repo</code> 或直接粘贴 GitHub 页面链接
           </li>
           <li>选择输出格式，点击"开始转换"</li>
           <li>复制结果，粘贴给 AI 进行分析</li>
@@ -254,7 +261,7 @@
 
         <h3>输出格式选择</h3>
         <ul>
-          <li><strong>Markdown</strong>：代码高亮、结构清晰，适合 ChatGPT 和 Gemini</li>
+          <li><strong>Markdown</strong>：代码高亮，适合 ChatGPT 和 Gemini</li>
           <li><strong>XML</strong>：边界清晰，Claude 官方推荐格式</li>
           <li><strong>纯文本</strong>：兼容性最强，适合简单项目</li>
         </ul>
@@ -270,8 +277,11 @@
         </p>
 
         <h3>智能过滤</h3>
-        <p>自动排除：<code>node_modules/</code>、<code>.git/</code>、<code>dist/</code>、
-          <code>build/</code>、二进制文件、媒体文件、<code>.env</code> 敏感文件等。</p>
+        <p>
+          自动排除：<code>node_modules/</code>、<code>.git/</code>、
+          <code>dist/</code>、<code>build/</code>、二进制文件、
+          媒体文件、<code>.env</code> 敏感文件等。
+        </p>
 
         <h3>隐私说明</h3>
         <p>
@@ -283,9 +293,6 @@
   </div>
 
   <div id="toast" class="toast"></div>
-
-  <!-- ⚠️ 不需要 CDN jszip：Vite 构建时已从 node_modules 打包 -->
-  <!-- 开发模式下 parser.js 通过 import JSZip from 'jszip' 直接使用 -->
 
   <script type="module" src="app.js"></script>
 
