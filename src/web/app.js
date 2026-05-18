@@ -8,7 +8,7 @@
  * - 修复远程仓库 Failed to fetch（CORS）问题
  * - 移除文件大小硬性限制，改为警告
  * - 修复 parseRepoInput 地址识别，覆盖所有常见格式
- * - [本次] 修复远程模式显示大小与实际不符：获取后立即过滤，显示过滤后真实大小
+ * - 修复远程模式显示大小：改为显示原始内容总大小，与本地模式逻辑一致
  */
 
 import { validateZipData, parseZip } from '../core/parser.js';
@@ -33,16 +33,16 @@ const PRICING = {
 // ============================================
 
 let state = {
-  file:          null,
-  output:        null,
-  format:        OUTPUT_FORMATS.MARKDOWN,
-  detectCache:   true,
-  skipped:       [],
-  sourceLabel:   '',
-  lastStats:     null,
-  remoteFiles:   null,   // 原始文件集合（未过滤）
-  remoteFiltered: null,  // 过滤后的文件集合（直接用于转换）
-  remoteStats:   null,   // 过滤后的统计信息
+  file:           null,
+  output:         null,
+  format:         OUTPUT_FORMATS.MARKDOWN,
+  detectCache:    true,
+  skipped:        [],
+  sourceLabel:    '',
+  lastStats:      null,
+  remoteFiles:    null,   // 原始文件集合（未过滤）
+  remoteFiltered: null,   // 过滤后的文件集合（转换时直接用）
+  remoteStats:    null,   // 过滤后统计信息
 };
 
 // ============================================
@@ -205,7 +205,7 @@ function handleLocalFile(file) {
   state.remoteStats    = null;
   state.sourceLabel    = file.name;
 
-  // 本地模式：显示 ZIP 原始大小（ZIP 是压缩的，解压后会更大，这里只是文件大小）
+  // 本地模式：显示 ZIP 压缩包本身的大小
   showFileInfo(file.name, file.size);
 }
 
@@ -256,13 +256,12 @@ function parseRepoInput(raw) {
   // 6. 拆分路径段
   const parts = input.split('/');
 
-  // 至少需要 owner + repo 两段
   if (parts.length < 2) return null;
 
   const owner = parts[0];
   let   repo  = parts[1];
 
-  // owner/repo 里可能带 @branch（手动输入格式）
+  // owner/repo 里可能带 @branch
   let branch = null;
   const atIdx = repo.indexOf('@');
   if (atIdx !== -1) {
@@ -270,26 +269,24 @@ function parseRepoInput(raw) {
     repo   = repo.slice(0, atIdx);
   }
 
-  // 合法性校验：GitHub 名称只允许字母、数字、连字符、下划线、点
+  // 合法性校验
   if (!owner || !repo) return null;
   if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null;
 
   const repoFullName = `${owner}/${repo}`;
 
-  // 如果已经从 @branch 拿到了分支，直接返回
+  // 已从 @branch 拿到分支
   if (branch) {
     return { repo: repoFullName, branch };
   }
 
-  // 只有 owner/repo，没有更多路径
+  // 只有 owner/repo
   if (parts.length === 2) {
     return { repo: repoFullName, branch: null };
   }
 
-  // 7. 解析第三段（路径类型）
+  // 解析第三段
   const pathType = parts[2];
-
-  // 这些路径类型后面紧跟分支名
   const BRANCH_AFTER = new Set([
     'tree', 'blob', 'commits', 'commit', 'compare', 'blame',
   ]);
@@ -298,8 +295,7 @@ function parseRepoInput(raw) {
     return { repo: repoFullName, branch: parts[3] };
   }
 
-  // 其他页面路径（releases、pulls、issues、actions、settings 等）
-  // 忽略路径，只取 owner/repo
+  // 其他页面路径（releases、pulls、issues 等），忽略路径
   return { repo: repoFullName, branch: null };
 }
 
@@ -486,7 +482,7 @@ async function handleRemoteFetch() {
   el.progressSection.style.display = 'block';
 
   try {
-    // Step 1：获取文件内容
+    // Step 1：获取所有文件内容
     const { files, skipped, branch } = await fetchRepoViaAPI(
       parsed.repo,
       parsed.branch,
@@ -494,8 +490,12 @@ async function handleRemoteFetch() {
       (text, pct) => setProgress(text, pct)
     );
 
-    // Step 2：立即运行过滤，获得真实的文件数和大小
-    // 这样 showFileInfo 显示的数字与后续转换结果完全一致
+    // Step 2：计算原始内容总大小（所有下载文件，未过滤）
+    // 这是"仓库原始内容大小"，对应本地模式的"ZIP 压缩包大小"
+    let rawTotalSize = 0;
+    for (const f of files.values()) rawTotalSize += f.size;
+
+    // Step 3：提前过滤，缓存结果，转换时直接用（避免重复过滤）
     setProgress('过滤文件...', 92);
     const { filtered, stats } = filterFiles(files);
 
@@ -503,23 +503,20 @@ async function handleRemoteFetch() {
 
     // 存入 state
     state.remoteFiles    = { files, skipped };
-    state.remoteFiltered = filtered;   // 已过滤，转换时直接用
-    state.remoteStats    = stats;      // 过滤后统计
+    state.remoteFiltered = filtered;
+    state.remoteStats    = stats;
     state.file           = { name: `${parsed.repo}@${branch}.zip` };
     state.sourceLabel    = `${parsed.repo}@${branch}`;
 
     setTimeout(() => {
       el.progressSection.style.display = 'none';
 
-      // 显示过滤后的真实大小，和转换结果里的数字完全一致
-      showFileInfo(
-        state.sourceLabel,
-        stats.totalSize,
-        stats.includedFiles
-      );
+      // 显示原始内容总大小（未过滤），与本地模式"ZIP大小"对齐
+      // 让用户看到的是"仓库有多大"，而不是"过滤后剩多少"
+      showFileInfo(state.sourceLabel, rawTotalSize);
 
       showToast(
-        `✅ 已获取 ${stats.includedFiles} 个文件（${parsed.repo}@${branch}）`,
+        `✅ 已获取 ${files.size} 个文件（${parsed.repo}@${branch}）`,
         'success'
       );
     }, 300);
@@ -536,21 +533,12 @@ async function handleRemoteFetch() {
 
 // ============================================
 // 共用：显示文件信息
-// fileCount 仅远程模式传入，本地模式不传
+// 两种模式统一格式，只显示大小，不加额外标注
 // ============================================
 
-function showFileInfo(name, size, fileCount = null) {
-  el.fileName.textContent = name;
-
-  // 大小显示：过滤后的实际内容大小
-  // 本地 ZIP 模式显示 ZIP 压缩包大小（实际内容解压后更大）
-  // 远程模式显示过滤后的内容大小（和转换结果一致）
-  if (fileCount !== null) {
-    el.fileSize.textContent = `${formatSize(size)}（${fileCount} 个文件，过滤后）`;
-  } else {
-    el.fileSize.textContent = formatSize(size);
-  }
-
+function showFileInfo(name, size) {
+  el.fileName.textContent         = name;
+  el.fileSize.textContent         = formatSize(size);
   el.fileInfo.style.display       = 'block';
   el.optionsSection.style.display = 'block';
 }
@@ -572,7 +560,7 @@ async function handleConvert() {
     let filtered, stats, skipped;
 
     if (state.remoteFiltered) {
-      // 远程模式：过滤已经在 handleRemoteFetch 里跑完了，直接用缓存结果
+      // 远程模式：过滤已在 handleRemoteFetch 里跑完，直接用缓存
       setProgress('准备文件...', 30);
       filtered = state.remoteFiltered;
       stats    = state.remoteStats;
@@ -780,16 +768,16 @@ function downloadFile() {
 
 function resetState() {
   state = {
-    file:          null,
-    output:        null,
-    format:        OUTPUT_FORMATS.MARKDOWN,
-    detectCache:   true,
-    skipped:       [],
-    sourceLabel:   '',
-    lastStats:     null,
-    remoteFiles:   null,
+    file:           null,
+    output:         null,
+    format:         OUTPUT_FORMATS.MARKDOWN,
+    detectCache:    true,
+    skipped:        [],
+    sourceLabel:    '',
+    lastStats:      null,
+    remoteFiles:    null,
     remoteFiltered: null,
-    remoteStats:   null,
+    remoteStats:    null,
   };
 
   el.fileInput.value               = '';
