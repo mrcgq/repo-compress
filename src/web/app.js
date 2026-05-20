@@ -814,3 +814,36 @@ window.addEventListener('message', async (event) => {
 });
 
 console.log('[repo-compress] App initialized ✓');
+
+// ============================================
+// 扩展消息接收（Chrome Extension）
+// ============================================
+
+window.addEventListener('message', async (event) => {
+  if (event.data?.type !== 'REPO_COMPRESS_FETCH') return;
+  const { repo, branch } = event.data;
+  if (!repo) return;
+
+  el.tabBtns.forEach(b => b.classList.remove('active'));
+  document.querySelector('[data-tab="remote"]').classList.add('active');
+  el.tabLocal.classList.add('hidden');
+  el.tabRemote.classList.remove('hidden');
+
+  el.repoUrl.value = branch ? `${repo}@${branch}` : repo;
+  await handleRemoteFetch();
+});
+
+console.log('[repo-compress] App initialized ✓');
+
+// ── 双向信标握手：网页端信标广播 ─────────────────────────────────────────
+// 当页面初始化完成后，主动通知可能正在等待的 Chrome 插件："我已准备好接收数据"。
+// 对应 extension/content.js 中的 handleHandshake 监听器。
+// 若不是被插件窗口打开（window.opener 为 null），此行无副作用。
+if (window.opener) {
+  try {
+    window.opener.postMessage({ type: 'REPO_COMPRESS_READY' }, '*');
+  } catch (e) {
+    // 跨域或窗口已关闭时静默忽略，不影响正常使用
+    console.warn('[repo-compress] Could not notify opener:', e);
+  }
+}
