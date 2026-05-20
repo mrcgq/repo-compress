@@ -78,9 +78,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      # 🚨 Law-16: 快速失败 - 提前检查必要条件
+      # 修复：if 条件去掉了引号和内部多余的语法，直接使用 secrets 上下文判断
       - name: Check NPM_TOKEN existence
-        if: "${{ secrets.NPM_TOKEN == '' }}"
+        if: ${{ secrets.NPM_TOKEN == '' }}
         run: |
           echo "❌ ERROR: NPM_TOKEN secret is missing in GitHub repository settings!"
           exit 1
@@ -102,7 +102,7 @@ jobs:
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
           TAG_VERSION=${{ steps.version.outputs.VERSION }}
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+          if[ "$PKG_VERSION" != "$TAG_VERSION" ]; then
             echo "❌ package.json version ($PKG_VERSION) != tag version ($TAG_VERSION)"
             exit 1
           fi
