@@ -142,6 +142,7 @@ describe('Converter', () => {
     const output = convert(sampleFiles, sampleStats, OUTPUT_FORMATS.MARKDOWN);
     assert.ok(output.includes('# 📦 Repository Content'));
     assert.ok(output.includes('## 📊 Statistics'));
+    // 无缓存检测数据时，标题固定为 Stable Zone 版本
     assert.ok(output.includes('## 📄 File Contents'));
     assert.ok(output.includes('console.log("hello");'));
   });
@@ -206,6 +207,234 @@ describe('Converter', () => {
       const output = convert(sampleFiles, sampleStats, format);
       assert.ok(output.length > 0, `${format} output should not be empty`);
     }
+  });
+
+  // ── BOUNDARY 物理隔离测试（捍卫核心重构） ──────────────────────────────
+
+  test('convert - Markdown 格式下，应该自动将脏文件隔离在 BOUNDARY 物理墙下方', () => {
+    const files = new Map([
+      ['src/clean.js', {
+        path:      'src/clean.js',
+        content:   'const x = 1;',
+        size:      12,
+        extension: '.js',
+        name:      'clean.js',
+      }],
+      ['src/dirty.js', {
+        path:      'src/dirty.js',
+        content:   'const time = "2026-05-20T14:15:14Z";',
+        size:      36,
+        extension: '.js',
+        name:      'dirty.js',
+      }],
+    ]);
+    const stats = {
+      totalFiles:    2,
+      includedFiles: 2,
+      totalSize:     48,
+      languages:     { '.js': 2 },
+      warnings:      [],
+    };
+    const cacheDetection = {
+      detected: [{ path: 'src/dirty.js', severity: 'HIGH', issues: ['TIMESTAMP'] }],
+      suggestions: ['移除时间戳'],
+    };
+
+    const output = convert(files, stats, OUTPUT_FORMATS.MARKDOWN, {}, cacheDetection);
+
+    const cleanIdx    = output.indexOf('src/clean.js');
+    const boundaryIdx = output.indexOf('==================== BOUNDARY ====================');
+    const dirtyIdx    = output.indexOf('src/dirty.js');
+
+    assert.ok(cleanIdx    !== -1, '应该包含干净文件路径');
+    assert.ok(boundaryIdx !== -1, '应该包含物理隔离边界墙');
+    assert.ok(dirtyIdx    !== -1, '应该包含脏文件路径');
+    assert.ok(
+      cleanIdx < boundaryIdx,
+      `干净文件（pos:${cleanIdx}）应在边界墙（pos:${boundaryIdx}）上方（稳定区）`,
+    );
+    assert.ok(
+      boundaryIdx < dirtyIdx,
+      `边界墙（pos:${boundaryIdx}）应在脏文件（pos:${dirtyIdx}）上方`,
+    );
+  });
+
+  test('convert - Markdown 格式下，无动态文件时不应插入 BOUNDARY 边界墙', () => {
+    const files = new Map([
+      ['src/a.js', {
+        path: 'src/a.js', content: 'const x = 1;',
+        size: 12, extension: '.js', name: 'a.js',
+      }],
+      ['src/b.js', {
+        path: 'src/b.js', content: 'const y = 2;',
+        size: 12, extension: '.js', name: 'b.js',
+      }],
+    ]);
+    const stats = {
+      totalFiles: 2, includedFiles: 2, totalSize: 24, languages: { '.js': 2 }, warnings: [],
+    };
+    // 传入空的 cacheDetection（无动态文件）
+    const cacheDetection = { detected: [], suggestions: [] };
+
+    const output = convert(files, stats, OUTPUT_FORMATS.MARKDOWN, {}, cacheDetection);
+
+    assert.ok(
+      !output.includes('==================== BOUNDARY ===================='),
+      '无动态文件时不应插入 BOUNDARY 边界墙',
+    );
+    assert.ok(
+      !output.includes('Dynamic Zone'),
+      '无动态文件时不应出现 Dynamic Zone 区块',
+    );
+  });
+
+  test('convert - Markdown 格式下，LOW 级动态文件不应被隔离到动态区', () => {
+    const files = new Map([
+      ['src/low.js', {
+        path: 'src/low.js', content: 'const agents = [1, 2, 3];',
+        size: 25, extension: '.js', name: 'low.js',
+      }],
+    ]);
+    const stats = {
+      totalFiles: 1, includedFiles: 1, totalSize: 25, languages: { '.js': 1 }, warnings: [],
+    };
+    // LOW 级不触发物理隔离
+    const cacheDetection = {
+      detected: [{ path: 'src/low.js', severity: 'LOW', issues: ['AGENTS'] }],
+      suggestions: [],
+    };
+
+    const output = convert(files, stats, OUTPUT_FORMATS.MARKDOWN, {}, cacheDetection);
+
+    assert.ok(
+      !output.includes('==================== BOUNDARY ===================='),
+      'LOW 级问题不应触发 BOUNDARY 隔离',
+    );
+    // LOW 级文件应出现在稳定区
+    assert.ok(output.includes('Stable Zone'), 'LOW 级文件应留在稳定区');
+    assert.ok(output.includes('src/low.js'),  '文件应正常出现在输出中');
+  });
+
+  test('convert - XML 格式下，应该自动将稳定文件与动态文件拆分为不同的 zone 标签', () => {
+    const files = new Map([
+      ['src/clean.js', {
+        path:      'src/clean.js',
+        content:   'const x = 1;',
+        size:      12,
+        extension: '.js',
+        name:      'clean.js',
+      }],
+      ['src/dirty.js', {
+        path:      'src/dirty.js',
+        content:   'const time = "2026-05-20T14:15:14Z";',
+        size:      36,
+        extension: '.js',
+        name:      'dirty.js',
+      }],
+    ]);
+    const stats = {
+      totalFiles:    2,
+      includedFiles: 2,
+      totalSize:     48,
+      languages:     { '.js': 2 },
+      warnings:      [],
+    };
+    const cacheDetection = {
+      detected: [{ path: 'src/dirty.js', severity: 'HIGH', issues: ['TIMESTAMP'] }],
+      suggestions: ['移除时间戳'],
+    };
+
+    const output = convert(files, stats, OUTPUT_FORMATS.XML, {}, cacheDetection);
+
+    assert.ok(output.includes('<files zone="stable"'),  '应该包含稳定区标签');
+    assert.ok(output.includes('<files zone="dynamic"'), '应该包含动态区标签');
+
+    // 进一步验证：干净文件在 stable 块，脏文件在 dynamic 块
+    const stableIdx  = output.indexOf('<files zone="stable"');
+    const dynamicIdx = output.indexOf('<files zone="dynamic"');
+    const cleanIdx   = output.indexOf('path="src/clean.js"');
+    const dirtyIdx   = output.indexOf('path="src/dirty.js"');
+
+    assert.ok(
+      stableIdx < cleanIdx && cleanIdx < dynamicIdx,
+      '干净文件应出现在 stable 块内（stable 开始 → clean → dynamic 开始）',
+    );
+    assert.ok(
+      dynamicIdx < dirtyIdx,
+      '脏文件应出现在 dynamic 块内',
+    );
+  });
+
+  test('convert - XML 格式下，无动态文件时应使用普通 <files> 标签而非 zone 标签', () => {
+    const files = new Map([
+      ['src/a.js', {
+        path: 'src/a.js', content: 'const x = 1;',
+        size: 12, extension: '.js', name: 'a.js',
+      }],
+    ]);
+    const stats = {
+      totalFiles: 1, includedFiles: 1, totalSize: 12, languages: { '.js': 1 }, warnings: [],
+    };
+    const cacheDetection = { detected: [], suggestions: [] };
+
+    const output = convert(files, stats, OUTPUT_FORMATS.XML, {}, cacheDetection);
+
+    // 无动态文件时，应退回普通 <files> 标签
+    assert.ok(output.includes('<files>'),              '应使用普通 <files> 标签');
+    assert.ok(!output.includes('<files zone="stable"'), '不应出现 stable zone 标签');
+    assert.ok(!output.includes('<files zone="dynamic"'), '不应出现 dynamic zone 标签');
+  });
+
+  test('convert - TXT 格式下，应该插入文字版 BOUNDARY 分隔线', () => {
+    const files = new Map([
+      ['src/clean.js', {
+        path: 'src/clean.js', content: 'const x = 1;',
+        size: 12, extension: '.js', name: 'clean.js',
+      }],
+      ['src/dirty.js', {
+        path: 'src/dirty.js', content: 'const time = "2026-05-20T14:15:14Z";',
+        size: 36, extension: '.js', name: 'dirty.js',
+      }],
+    ]);
+    const stats = {
+      totalFiles: 2, includedFiles: 2, totalSize: 48, languages: { '.js': 2 }, warnings: [],
+    };
+    const cacheDetection = {
+      detected: [{ path: 'src/dirty.js', severity: 'HIGH', issues: ['TIMESTAMP'] }],
+      suggestions: [],
+    };
+
+    const output = convert(files, stats, OUTPUT_FORMATS.TXT, {}, cacheDetection);
+
+    const cleanIdx    = output.indexOf('FILE: src/clean.js');
+    const boundaryIdx = output.indexOf('BOUNDARY');
+    const dirtyIdx    = output.indexOf('FILE: src/dirty.js');
+
+    assert.ok(cleanIdx    !== -1, '应包含干净文件');
+    assert.ok(boundaryIdx !== -1, '应包含 BOUNDARY 分隔标记');
+    assert.ok(dirtyIdx    !== -1, '应包含脏文件');
+    assert.ok(cleanIdx < boundaryIdx, '干净文件应在 BOUNDARY 上方');
+    assert.ok(boundaryIdx < dirtyIdx, '脏文件应在 BOUNDARY 下方');
+  });
+
+  test('convert - 未传入 cacheDetection 时，行为应与旧版完全兼容（全部视为稳定文件）', () => {
+    const files = new Map([
+      ['a.js', { path: 'a.js', content: 'const a = 1;', size: 12, extension: '.js', name: 'a.js' }],
+      ['b.js', { path: 'b.js', content: 'const b = 2;', size: 12, extension: '.js', name: 'b.js' }],
+    ]);
+    const stats = {
+      totalFiles: 2, includedFiles: 2, totalSize: 24, languages: { '.js': 2 }, warnings: [],
+    };
+
+    // 不传第 5 个参数
+    const output = convert(files, stats, OUTPUT_FORMATS.MARKDOWN);
+
+    assert.ok(output.includes('a.js'), '应包含文件 a.js');
+    assert.ok(output.includes('b.js'), '应包含文件 b.js');
+    assert.ok(
+      !output.includes('BOUNDARY'),
+      '不传 cacheDetection 时不应出现 BOUNDARY 分隔',
+    );
   });
 });
 
@@ -373,6 +602,49 @@ describe('Integration', () => {
     assert.ok(output.includes('</repository>'));
     assert.ok(output.includes('<files>'));
     assert.ok(output.includes('</files>'));
+  });
+
+  test('full workflow - BOUNDARY 与 detectCacheBusters 联动应正确分区', () => {
+    // 模拟一个真实场景：clean 文件 + 含时间戳的 dirty 文件
+    // 走完整检测 → 转换流程，验证端到端分区结果
+    const files = new Map([
+      ['src/utils.js', {
+        path:      'src/utils.js',
+        content:   'export function add(a, b) { return a + b; }',
+        size:      43,
+        extension: '.js',
+        name:      'utils.js',
+      }],
+      ['src/logger.js', {
+        path:      'src/logger.js',
+        content:   'const built = "2026-05-20T14:15:14Z"; export default built;',
+        size:      60,
+        extension: '.js',
+        name:      'logger.js',
+      }],
+    ]);
+
+    const { filtered, stats } = filterFiles(files);
+    // 步骤一：检测
+    const cacheDetection = detectCacheBusters(filtered);
+    // logger.js 含时间戳，应被检测到
+    assert.ok(
+      cacheDetection.detected.some(d => d.path === 'src/logger.js'),
+      'logger.js 应被检测为含动态内容',
+    );
+
+    // 步骤二：转换（传入检测结果）
+    const output = convert(filtered, stats, OUTPUT_FORMATS.MARKDOWN, {}, cacheDetection);
+
+    const utilsIdx    = output.indexOf('src/utils.js');
+    const boundaryIdx = output.indexOf('==================== BOUNDARY ====================');
+    const loggerIdx   = output.indexOf('src/logger.js');
+
+    assert.ok(utilsIdx    !== -1, 'utils.js 应出现在输出中');
+    assert.ok(boundaryIdx !== -1, '应存在 BOUNDARY 分隔墙');
+    assert.ok(loggerIdx   !== -1, 'logger.js 应出现在输出中');
+    assert.ok(utilsIdx    < boundaryIdx, 'utils.js 应在 BOUNDARY 上方');
+    assert.ok(boundaryIdx < loggerIdx,  'logger.js 应在 BOUNDARY 下方');
   });
 });
 
