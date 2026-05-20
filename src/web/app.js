@@ -2,10 +2,14 @@
  * Web UI Application Logic
  *
  * 修复记录：
- * - [本次] 统一两种模式的文件大小显示逻辑
- *          本地模式：显示解压后原始内容大小（parseZip 完成后更新）
- *          远程模式：显示下载的原始内容大小（所有文件 size 之和）
- *          两种模式数字口径一致，用户不再困惑
+ * - 统一两种模式的文件大小显示逻辑
+ *   本地模式：显示解压后原始内容大小（parseZip 完成后更新）
+ *   远程模式：显示下载的原始内容大小（所有文件 size 之和）
+ * - [本次] 修复远程模式静默丢失文件的 Bug：
+ *   将限流错误（403/429）从普通 skipped 中分离，
+ *   触发时立即熔断整个下载任务并向用户报错，
+ *   避免用户拿到严重残缺的打包结果却不知情。
+ * - [本次] convert 调用时传入 cacheDetection，触发物理隔离排序
  */
 
 import { validateZipData, parseZip } from '../core/parser.js';
@@ -40,6 +44,7 @@ let state = {
   remoteFiles:    null,
   remoteFiltered: null,
   remoteStats:    null,
+  localParsed:    null,
 };
 
 // ============================================
@@ -185,10 +190,6 @@ el.helpModal.addEventListener('click', e => {
 
 // ============================================
 // 本地文件处理
-//
-// 选文件后先显示"解析中"，
-// parseZip 完成后更新为解压后的真实原始内容大小。
-// 这样和远程模式（下载后原始内容大小）口径完全一致。
 // ============================================
 
 async function handleLocalFile(file) {
@@ -204,35 +205,31 @@ async function handleLocalFile(file) {
   state.remoteFiles    = null;
   state.remoteFiltered = null;
   state.remoteStats    = null;
+  state.localParsed    = null;
   state.sourceLabel    = file.name;
 
-  // 先显示文件名，大小显示"解析中..."
   el.fileName.textContent         = file.name;
   el.fileSize.textContent         = '解析中...';
   el.fileInfo.style.display       = 'block';
-  el.optionsSection.style.display = 'none'; // 还没解析完，先不显示转换选项
+  el.optionsSection.style.display = 'none';
 
-  // 后台解析 ZIP，获取解压后原始内容大小
   try {
     el.progressSection.style.display = 'block';
     setProgress('正在解析 ZIP 文件...', 30);
 
     const { files, skipped } = await parseZip(file);
 
-    // 计算解压后所有文件的原始内容总大小
     let rawTotalSize = 0;
     for (const f of files.values()) rawTotalSize += f.size;
 
-    // 缓存解析结果，转换时直接用，不用再解析一次
     state.localParsed = { files, skipped };
 
     setProgress('解析完成！', 100);
 
     setTimeout(() => {
       el.progressSection.style.display = 'none';
-      // 更新为解压后原始内容大小
-      el.fileSize.textContent         = formatSize(rawTotalSize);
-      el.optionsSection.style.display = 'block';
+      el.fileSize.textContent          = formatSize(rawTotalSize);
+      el.optionsSection.style.display  = 'block';
     }, 300);
 
   } catch (err) {
@@ -260,24 +257,19 @@ function parseRepoInput(raw) {
 
   // 去掉协议头
   input = input.replace(/^https?:\/\//i, '');
-
   // 去掉 github.com/ 前缀
   input = input.replace(/^(?:www\.)?github\.com\//i, '');
-
   // 去掉末尾 .git
   input = input.replace(/\.git$/, '');
-
   // 去掉末尾斜杠
   input = input.replace(/\/+$/, '');
 
-  // 拆分路径段
   const parts = input.split('/');
   if (parts.length < 2) return null;
 
   const owner = parts[0];
   let   repo  = parts[1];
 
-  // 处理 owner/repo@branch 格式
   let branch = null;
   const atIdx = repo.indexOf('@');
   if (atIdx !== -1) {
@@ -293,8 +285,7 @@ function parseRepoInput(raw) {
   if (branch) return { repo: repoFullName, branch };
   if (parts.length === 2) return { repo: repoFullName, branch: null };
 
-  // 解析第三段（路径类型）
-  const pathType   = parts[2];
+  const pathType     = parts[2];
   const BRANCH_AFTER = new Set([
     'tree', 'blob', 'commits', 'commit', 'compare', 'blame',
   ]);
@@ -324,7 +315,7 @@ async function getDefaultBranch(repo, headers) {
 async function getFileTree(repo, branch, headers) {
   const res = await fetch(
     `https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`,
-    { headers }
+    { headers },
   );
   if (res.status === 404) throw new Error(`分支不存在: ${branch}`);
   if (res.status === 403 || res.status === 429) {
@@ -337,15 +328,15 @@ async function getFileTree(repo, branch, headers) {
 }
 
 const BINARY_EXTS = new Set([
-  '.jpg','.jpeg','.png','.gif','.webp','.ico','.bmp','.tiff','.avif',
-  '.mp4','.mp3','.wav','.ogg','.webm','.mov','.avi','.mkv','.aac','.flac',
-  '.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx',
-  '.zip','.tar','.gz','.7z','.rar','.bz2','.xz',
-  '.exe','.dll','.so','.dylib','.bin','.wasm',
-  '.woff','.woff2','.ttf','.eot','.otf',
-  '.db','.sqlite','.sqlite3',
-  '.pyc','.class','.jar','.apk','.ipa',
-  '.map','.psd','.ai','.sketch','.fig','.blend',
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.ico', '.bmp', '.tiff', '.avif',
+  '.mp4', '.mp3', '.wav', '.ogg', '.webm', '.mov', '.avi', '.mkv', '.aac', '.flac',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.zip', '.tar', '.gz', '.7z', '.rar', '.bz2', '.xz',
+  '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm',
+  '.woff', '.woff2', '.ttf', '.eot', '.otf',
+  '.db', '.sqlite', '.sqlite3',
+  '.pyc', '.class', '.jar', '.apk', '.ipa',
+  '.map', '.psd', '.ai', '.sketch', '.fig', '.blend',
 ]);
 
 const SKIP_PREFIXES = [
@@ -356,19 +347,35 @@ const SKIP_PREFIXES = [
   'logs/', 'tmp/', 'temp/',
 ];
 
-function shouldSkipPath(path) {
-  if (SKIP_PREFIXES.some(p => path.startsWith(p) || path.includes('/' + p))) return true;
-  const dot = path.lastIndexOf('.');
-  if (dot > 0 && BINARY_EXTS.has(path.slice(dot).toLowerCase())) return true;
+function shouldSkipPath(filePath) {
+  if (SKIP_PREFIXES.some(p => filePath.startsWith(p) || filePath.includes('/' + p))) return true;
+  const dot = filePath.lastIndexOf('.');
+  if (dot > 0 && BINARY_EXTS.has(filePath.slice(dot).toLowerCase())) return true;
   return false;
 }
 
+/**
+ * 获取单个文件内容
+ *
+ * 错误分级：
+ *   · 403 / 429  → 挂载 err.isRateLimit = true，调用方应立即熔断
+ *   · 其他       → 普通错误，调用方可降级写入 skipped
+ */
 async function fetchFileContent(repo, sha, headers) {
   const res = await fetch(
     `https://api.github.com/repos/${repo}/git/blobs/${sha}`,
-    { headers }
+    { headers },
   );
-  if (!res.ok) throw new Error(`获取文件失败 (HTTP ${res.status})`);
+
+  if (!res.ok) {
+    const err = new Error(`获取文件失败 (HTTP ${res.status})`);
+    // 标记限流/鉴权失败，供上层熔断判断
+    if (res.status === 403 || res.status === 429) {
+      err.isRateLimit = true;
+    }
+    throw err;
+  }
+
   const data = await res.json();
 
   if (data.encoding === 'base64') {
@@ -384,6 +391,14 @@ async function fetchFileContent(repo, sha, headers) {
   return data.content;
 }
 
+/**
+ * 通过 GitHub API 抓取仓库所有文件内容
+ *
+ * 熔断机制：
+ *   单个文件抓取若触发限流（err.isRateLimit），
+ *   立即抛出并中止整个 Promise.all 批次，
+ *   防止产出严重残缺的打包结果。
+ */
 async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   const headers = {
     'Accept':               'application/vnd.github+json',
@@ -398,11 +413,13 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   const tree = await getFileTree(repo, defaultBranch, headers);
 
   const MAX_FILE_SIZE = 2 * 1024 * 1024;
-  const candidates = tree.filter(item =>
-    !shouldSkipPath(item.path) && item.size <= MAX_FILE_SIZE
+  const candidates    = tree.filter(item =>
+    !shouldSkipPath(item.path) && item.size <= MAX_FILE_SIZE,
   );
 
-  if (candidates.length === 0) throw new Error('过滤后没有可用文件，请检查仓库内容');
+  if (candidates.length === 0) {
+    throw new Error('过滤后没有可用文件，请检查仓库内容');
+  }
 
   onProgress(`共 ${candidates.length} 个文件，开始下载内容...`, 30);
 
@@ -414,6 +431,8 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
   for (let i = 0; i < candidates.length; i += BATCH_SIZE) {
     const batch = candidates.slice(i, i + BATCH_SIZE);
 
+    // 注意：Promise.all 中任意一个抛出，整批立即 reject。
+    // 限流错误会向上传播，终止外层 for 循环，最终被 handleRemoteFetch 捕获。
     await Promise.all(batch.map(async (item) => {
       try {
         const content = await fetchFileContent(repo, item.sha, headers);
@@ -425,6 +444,15 @@ async function fetchRepoViaAPI(repo, branch, token, onProgress) {
           size: content.length, name, extension: ext, encoding: 'utf-8',
         });
       } catch (err) {
+        // 限流 / 鉴权失败：立即向上抛出，熔断整个下载任务
+        if (err.isRateLimit) {
+          throw new Error(
+            'GitHub API 触发限流，下载任务已中止。' +
+            '请配置 Token（每小时 60→5000 次）或稍后重试。',
+          );
+        }
+        // 普通错误（文件不存在、编码问题等）：降级记录，继续下载其他文件
+        console.warn(`[Remote] 跳过文件 ${item.path}: ${err.message}`);
         skipped.push({ path: item.path, reason: err.message });
       }
     }));
@@ -460,15 +488,12 @@ async function handleRemoteFetch() {
   try {
     const { files, skipped, branch } = await fetchRepoViaAPI(
       parsed.repo, parsed.branch, token,
-      (text, pct) => setProgress(text, pct)
+      (text, pct) => setProgress(text, pct),
     );
 
-    // 计算原始内容总大小（所有下载文件，未过滤）
-    // 口径：和本地模式"解压后原始内容大小"完全一致
     let rawTotalSize = 0;
     for (const f of files.values()) rawTotalSize += f.size;
 
-    // 提前过滤，缓存结果
     setProgress('过滤文件...', 92);
     const { filtered, stats } = filterFiles(files);
 
@@ -483,11 +508,10 @@ async function handleRemoteFetch() {
 
     setTimeout(() => {
       el.progressSection.style.display = 'none';
-      // 显示原始内容总大小（未过滤），与本地模式"解压后原始内容大小"一致
-      el.fileName.textContent         = state.sourceLabel;
-      el.fileSize.textContent         = formatSize(rawTotalSize);
-      el.fileInfo.style.display       = 'block';
-      el.optionsSection.style.display = 'block';
+      el.fileName.textContent          = state.sourceLabel;
+      el.fileSize.textContent          = formatSize(rawTotalSize);
+      el.fileInfo.style.display        = 'block';
+      el.optionsSection.style.display  = 'block';
 
       showToast(`✅ 已获取 ${files.size} 个文件（${parsed.repo}@${branch}）`, 'success');
     }, 300);
@@ -558,7 +582,9 @@ async function handleConvert() {
       skipped:    skipped,
       sourceFile: state.sourceLabel || state.file?.name || 'unknown',
     };
-    const output = convert(filtered, stats, state.format, meta);
+
+    // 传入 cacheDetection，converter 会据此自动执行 BOUNDARY 物理隔离
+    const output = convert(filtered, stats, state.format, meta, cacheDetection);
     state.output = output;
 
     setProgress('完成！', 100);
@@ -655,7 +681,7 @@ function showResults(stats, cacheDetection) {
   el.languageStats.innerHTML = langEntries.length > 0
     ? '<h4 style="margin-bottom:0.5rem">文件类型分布</h4>' +
       langEntries.map(([ext, count]) =>
-        `<div class="language-item"><span>${ext}</span><span>${count} 个文件</span></div>`
+        `<div class="language-item"><span>${ext}</span><span>${count} 个文件</span></div>`,
       ).join('')
     : '';
 
@@ -683,7 +709,7 @@ function showResults(stats, cacheDetection) {
       '<ul style="margin-left:1.25rem;margin-top:0.5rem;font-size:0.8rem">' +
       cacheDetection.detected.map(d =>
         `<li><code>${d.path}</code>
-         <span class="cache-severity ${d.severity.toLowerCase()}">${d.severity}</span></li>`
+         <span class="cache-severity ${d.severity.toLowerCase()}">${d.severity}</span></li>`,
       ).join('') +
       '</ul></details>';
   } else {
