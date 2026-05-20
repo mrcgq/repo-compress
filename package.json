@@ -1,11 +1,15 @@
 {
   "name": "repo-compress",
-  "version": "1.0.0",
-  "description": "将 GitHub 项目 ZIP 压缩包转换为 AI 友好的单文件格式（Markdown/XML/TXT）",
+  "version": "1.1.0",
+  "description": "将 GitHub 项目 ZIP 压缩包转换为 AI 友好格式（Markdown/XML/TXT）",
   "type": "module",
   "main": "src/cli/index.js",
   "bin": {
     "repo-compress": "src/cli/index.js"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "scripts": {
     "dev": "vite",
@@ -14,7 +18,7 @@
     "cli": "node src/cli/index.js",
     "test": "node --test test/*.test.js"
   },
-  "keywords": [
+  "keywords":[
     "code-analysis",
     "ai-prompt",
     "repository",
