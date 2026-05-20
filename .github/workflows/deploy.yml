@@ -71,7 +71,7 @@ jobs:
   # ==========================================
   # Job 4：发布 npm 包
   # ==========================================
-publish-npm:
+  publish-npm:
     name: 📦 Publish to npm
     runs-on: ubuntu-latest
     needs: build
@@ -82,7 +82,7 @@ publish-npm:
     steps:
       - name: Check NPM_TOKEN existence
         run: |
-          if [ -z "$NPM_TOKEN" ]; then
+          if[ -z "$NPM_TOKEN" ]; then
             echo "❌ ERROR: NPM_TOKEN secret is missing!"
             exit 1
           fi
@@ -104,13 +104,12 @@ publish-npm:
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
           TAG_VERSION=${{ steps.version.outputs.VERSION }}
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+          if[ "$PKG_VERSION" != "$TAG_VERSION" ]; then
             echo "❌ package.json version ($PKG_VERSION) != tag version ($TAG_VERSION)"
             exit 1
           fi
           echo "✅ Version match: $PKG_VERSION"
 
-      # 【修复点】：加入了 --access public 参数
       - name: Publish to npm
         run: npm publish --access public
         env:
