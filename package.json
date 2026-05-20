@@ -1,6 +1,6 @@
 {
   "name": "repo-compress",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "将 GitHub 项目 ZIP 压缩包转换为 AI 友好的单文件格式（Markdown/XML/TXT）",
   "type": "module",
   "main": "src/cli/index.js",
