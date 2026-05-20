@@ -3,6 +3,8 @@
 /**
  * repo-compress CLI
  * 新增：--remote 远程仓库支持
+ * 新增：--lint CI/CD 阻断模式
+ * 新增：cacheDetection 传入 convert，实现物理隔离
  */
 
 import fs from 'fs';
@@ -45,6 +47,9 @@ const HELP_TEXT = `
   -t, --token <token>      GitHub Personal Access Token
                            （避免 API 限流，也可用 GITHUB_TOKEN 环境变量）
   --no-cache-detect        禁用缓存破坏检测
+  --lint                   Linter 模式：如发现 HIGH 级缓存破坏向量，
+                           以退出码 1 终止（适用于 CI/CD）
+                           需配合缓存检测使用（不可与 --no-cache-detect 同用）
   --stats                  显示详细统计信息
   -h, --help               显示帮助信息
   -v, --version            显示版本号
@@ -58,6 +63,10 @@ const HELP_TEXT = `
   repo-compress --remote facebook/react
   repo-compress --remote facebook/react@main -f xml
   repo-compress -r vuejs/vue --stats
+
+  # CI/CD Linter 模式（检测到 HIGH 级问题时阻断流水线）
+  repo-compress --remote owner/repo --lint
+  repo-compress project.zip --lint --stats
 
   # 只包含源码目录
   repo-compress --remote owner/repo -i "src/**" -i "*.md"
@@ -79,6 +88,7 @@ function parseArguments(args) {
     include:     [],
     exclude:     [],
     detectCache: true,
+    lint:        false,
     showStats:   false,
   };
 
@@ -114,14 +124,21 @@ function parseArguments(args) {
       continue;
     }
 
-    if (arg === '-o' || arg === '--output') { options.output  = args[++i]; continue; }
+    if (arg === '-o' || arg === '--output')  { options.output  = args[++i]; continue; }
     if (arg === '-i' || arg === '--include') { options.include.push(args[++i]); continue; }
     if (arg === '-e' || arg === '--exclude') { options.exclude.push(args[++i]); continue; }
-    if (arg === '--no-cache-detect') { options.detectCache = false; continue; }
-    if (arg === '--stats') { options.showStats = true; continue; }
+    if (arg === '--no-cache-detect')         { options.detectCache = false; continue; }
+    if (arg === '--lint')                    { options.lint    = true; continue; }
+    if (arg === '--stats')                   { options.showStats = true; continue; }
 
     console.error(`❌ 未知选项 "${arg}"`);
     console.log('使用 repo-compress --help 查看帮助');
+    process.exit(1);
+  }
+
+  // 参数合法性检查：--lint 依赖缓存检测
+  if (options.lint && !options.detectCache) {
+    console.error('❌ --lint 模式需要缓存检测，不可与 --no-cache-detect 同时使用');
     process.exit(1);
   }
 
@@ -160,7 +177,7 @@ function parseRemoteInput(input) {
  */
 async function downloadRemoteRepo(repo, preferredBranch, token) {
   const headers = {
-    'Accept': 'application/vnd.github+json',
+    'Accept':     'application/vnd.github+json',
     'User-Agent': `repo-compress/${VERSION}`,
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -181,7 +198,7 @@ async function downloadRemoteRepo(repo, preferredBranch, token) {
     }
     if (!res.ok) throw new Error(`GitHub API 错误 (${res.status})`);
 
-    const info  = await res.json();
+    const info    = await res.json();
     defaultBranch = info.default_branch || 'main';
     console.log(` 默认分支: ${defaultBranch}`);
   }
@@ -326,15 +343,19 @@ async function runConversion(options) {
     cacheDetection = detectCacheBusters(filtered);
     if (cacheDetection.detected.length > 0) {
       console.log(`   ⚠️  发现 ${cacheDetection.detected.length} 个文件包含动态内容`);
+      const highCount = cacheDetection.detected.filter(d => d.severity === 'HIGH').length;
+      if (highCount > 0) {
+        console.log(`   🚨 其中 HIGH 级: ${highCount} 个`);
+      }
     } else {
       console.log('   ✅ 未发现缓存破坏向量');
     }
   }
 
-  // ── 转换 ──────────────────────────────────
+  // ── 转换（传入 cacheDetection，触发物理隔离排序）──
   console.log(`\n📝 生成 ${options.format.toUpperCase()} 格式...`);
   const meta   = { skipped, sourceFile: sourceLabel };
-  const output = convert(filtered, stats, options.format, meta);
+  const output = convert(filtered, stats, options.format, meta, cacheDetection);
   console.log(`   输出大小: ${formatSize(output.length)}`);
   console.log(`   预估 Token: ~${formatNumber(Math.ceil(output.length / 4))}`);
 
@@ -358,6 +379,27 @@ async function runConversion(options) {
   console.log('\n✅ 转换完成！');
   console.log('━'.repeat(50));
   console.log('\n💡 将文件内容粘贴给 AI 进行分析\n');
+
+  // ── Lint 模式：阻断检查 ──────────────────
+  // 必须在"转换完成"之后执行，确保产物已经写入磁盘，
+  // 再以非零退出码通知 CI Runner 本次构建失败。
+  if (options.lint && cacheDetection) {
+    const highIssues = cacheDetection.detected.filter(d => d.severity === 'HIGH');
+    if (highIssues.length > 0) {
+      console.error('━'.repeat(50));
+      console.error(`\n🚨 [LINTER FAILED] 发现 ${highIssues.length} 个 HIGH 级缓存破坏向量：`);
+      highIssues.forEach(issue => {
+        console.error(`   • ${issue.path}  (${issue.type})`);
+      });
+      console.error('\n   在 --lint 模式下，HIGH 级动态内容会导致 Prompt Cache 完全失效，');
+      console.error('   每次 API 调用将按全量 Token 计费。');
+      console.error('   请修复上述文件，或使用 --exclude 将其排除在打包范围之外。');
+      console.error('\n   退出码 1 —— CI/CD 流水线已阻断。\n');
+      process.exit(1);
+    } else {
+      console.log('🛡️  [LINTER PASSED] 未发现 HIGH 级缓存破坏向量，Prompt Cache 可正常命中。\n');
+    }
+  }
 }
 
 // ============================================
