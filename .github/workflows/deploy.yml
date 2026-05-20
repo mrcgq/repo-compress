@@ -17,7 +17,7 @@ concurrency:
 jobs:
 
   # ==========================================
-  # Job 1：测试（Law-49 失败常态：先通过测试，再考虑构建）
+  # Job 1：测试
   # ==========================================
   test:
     name: 🧪 Run Tests
@@ -76,14 +76,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
+    # 【修复核心】通过 env 将 secret 映射到环境变量，在脚本中进行判断，这是最稳妥的写法
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     steps:
-      # 修复：if 条件去掉了引号和内部多余的语法，直接使用 secrets 上下文判断
       - name: Check NPM_TOKEN existence
-        if: ${{ secrets.NPM_TOKEN == '' }}
         run: |
-          echo "❌ ERROR: NPM_TOKEN secret is missing in GitHub repository settings!"
-          exit 1
+          if[ -z "$NPM_TOKEN" ]; then
+            echo "❌ ERROR: NPM_TOKEN secret is missing in GitHub repository settings!"
+            exit 1
+          fi
 
       - uses: actions/checkout@v5
 
@@ -102,7 +105,7 @@ jobs:
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
           TAG_VERSION=${{ steps.version.outputs.VERSION }}
-          if[ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
             echo "❌ package.json version ($PKG_VERSION) != tag version ($TAG_VERSION)"
             exit 1
           fi
